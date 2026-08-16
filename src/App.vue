@@ -5,6 +5,8 @@ import { io } from 'socket.io-client';
 import { useColorExtractor } from './composables/useColorExtractor';
 import SleepTimerModal from './components/SleepTimerModal.vue';
 import PlaylistModal from './components/PlaylistModal.vue';
+import EqualizerModal from './components/EqualizerModal.vue';
+import UploaderModal from './components/UploaderModal.vue';
 
 const BACKEND_URL = import.meta.env.DEV
   ? `http://${window.location.hostname}:3000`
@@ -16,10 +18,14 @@ const socket = io(BACKEND_URL);
 const isConnected = ref(false);
 const isSleepTimerModalOpen = ref(false);
 const isPlaylistModalOpen = ref(false);
+const isEqualizerModalOpen = ref(false);
+const isUploaderModalOpen = ref(false);
+
 const playlistModalMode = ref('create');
 const selectedTrackForPlaylist = ref(null);
 
 const sleepTimer = ref({ active: false, remainingSeconds: 0 });
+const eqSettings = ref({ enabled: true, preset: 'bass_boost', bands: [] });
 const masterLibrary = ref([]);
 const queue = ref([]);
 const favorites = ref([]);
@@ -41,7 +47,7 @@ const currentTrack = ref({
 
 const isPlaying = ref(false);
 const isShuffle = ref(false);
-const repeatMode = ref('all'); // 'off' | 'all' | 'one'
+const repeatMode = ref('all');
 const volume = ref(10);
 const searchQuery = ref('');
 const imageError = ref(false);
@@ -101,8 +107,10 @@ const changeVolume = () => {
   socket.emit('set_volume', volume.value);
 };
 
+// Acciones Modales
 const setSleepTimer = (minutes) => socket.emit('set_sleep_timer', minutes);
 const cancelSleepTimer = () => socket.emit('cancel_sleep_timer');
+const handleUpdateEq = (newEq) => socket.emit('set_eq', newEq);
 
 const openCreatePlaylistModal = () => {
   playlistModalMode.value = 'create';
@@ -146,7 +154,6 @@ const progressPercent = computed(() => {
 
 const isTrackFavorite = (path) => favorites.value.includes(path);
 
-// FILTRADO ESTRICTO ANTI-NÚMEROS
 const uniqueArtists = computed(() => {
   const list = masterLibrary.value
     .map(t => t.artist)
@@ -161,7 +168,6 @@ const uniqueGenres = computed(() => {
   return [...new Set(list)].sort((a, b) => a.localeCompare(b));
 });
 
-// Cola visual priorizada con la pista activa en el índice 0
 const displayedQueue = computed(() => {
   let list = queue.value;
 
@@ -214,6 +220,7 @@ onMounted(() => {
     isPlaying.value = state.isPlaying;
     isShuffle.value = state.isShuffle;
     if (state.repeatMode !== undefined) repeatMode.value = state.repeatMode;
+    if (state.eqSettings) eqSettings.value = state.eqSettings;
     currentFilterMode.value = state.currentFilterMode;
     selectedArtist.value = state.selectedArtist;
     selectedGenre.value = state.selectedGenre;
@@ -252,8 +259,39 @@ onUnmounted(() => {
       </div>
 
       <div class="header-actions">
+        <!-- Botón Web Uploader -->
         <button 
-          class="btn-sleep-timer" 
+          class="btn-header-icon" 
+          @click="isUploaderModalOpen = true"
+          title="Subir canciones a la MicroSD"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+        </button>
+
+        <!-- Botón Ecualizador DSP -->
+        <button 
+          class="btn-header-icon" 
+          :class="{ active: eqSettings.enabled }"
+          @click="isEqualizerModalOpen = true"
+          title="Ecualizador DSP"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="4" y1="21" x2="4" y2="14"></line>
+            <line x1="4" y1="10" x2="4" y2="3"></line>
+            <line x1="12" y1="21" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12" y2="3"></line>
+            <line x1="20" y1="21" x2="20" y2="16"></line>
+            <line x1="20" y1="12" x2="20" y2="3"></line>
+          </svg>
+        </button>
+
+        <!-- Botón Sleep Timer -->
+        <button 
+          class="btn-header-icon" 
           :class="{ active: sleepTimer.active }"
           @click="isSleepTimerModalOpen = true"
           title="Sleep Timer"
@@ -266,7 +304,7 @@ onUnmounted(() => {
 
         <div class="status-pill" :class="{ connected: isConnected }">
           <span class="status-indicator"></span>
-          <span class="status-text">{{ isConnected ? 'DAP LINK' : 'OFFLINE' }}</span>
+          <span class="status-text">{{ isConnected ? 'DAP' : 'OFF' }}</span>
         </div>
       </div>
     </header>
@@ -364,7 +402,7 @@ onUnmounted(() => {
       </template>
     </nav>
 
-    <!-- REPRODUCTOR PRINCIPAL CON PORTADA DIFUMINADA -->
+    <!-- REPRODUCTOR PRINCIPAL -->
     <section class="player-card">
       <div class="card-blur-backdrop" v-if="coverUrl">
         <img :src="coverUrl" alt="" class="card-blur-img" />
@@ -373,7 +411,10 @@ onUnmounted(() => {
 
       <div class="deck-inner-content">
         <div class="deck-top-row">
-          <span class="deck-badge">{{ currentTrack.genre || 'HI-RES AUDIO' }}</span>
+          <div class="badge-group">
+            <span class="deck-badge">{{ currentTrack.genre || 'HI-RES AUDIO' }}</span>
+            <span v-if="eqSettings.enabled" class="deck-eq-badge">DSP: {{ eqSettings.preset.toUpperCase() }}</span>
+          </div>
           <button 
             v-if="currentTrack.path"
             class="fav-deck-btn"
@@ -422,9 +463,8 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Botonera de Control Completa -->
+        <!-- Botonera -->
         <div class="controls-deck">
-          <!-- Aleatorio -->
           <button 
             class="btn-deck-action" 
             :class="{ active: isShuffle }" 
@@ -457,7 +497,6 @@ onUnmounted(() => {
             </svg>
           </button>
 
-          <!-- BOTÓN REPETIR (TRI-ESTADO) -->
           <button 
             class="btn-deck-action btn-repeat" 
             :class="{ active: repeatMode !== 'off' }" 
@@ -575,6 +614,19 @@ onUnmounted(() => {
       @create-playlist="handleCreatePlaylist"
       @add-to-playlist="handleAddToPlaylist"
     />
+
+    <EqualizerModal 
+      :is-open="isEqualizerModalOpen"
+      :eq-settings="eqSettings"
+      @close="isEqualizerModalOpen = false"
+      @update-eq="handleUpdateEq"
+    />
+
+    <UploaderModal 
+      :is-open="isUploaderModalOpen"
+      :backend-url="BACKEND_URL"
+      @close="isUploaderModalOpen = false"
+    />
   </div>
 </template>
 
@@ -625,24 +677,26 @@ onUnmounted(() => {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
-.btn-sleep-timer {
+.btn-header-icon {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   background: rgba(17, 24, 39, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: #9ca3af;
-  padding: 4px 8px;
-  border-radius: 16px;
+  padding: 5px 8px;
+  border-radius: 14px;
   cursor: pointer;
+  transition: all 0.15s ease;
 }
-.btn-sleep-timer svg { width: 13px; height: 13px; }
-.btn-sleep-timer.active {
+.btn-header-icon svg { width: 14px; height: 14px; }
+.btn-header-icon.active {
   border-color: var(--theme-accent, #38bdf8);
   color: var(--theme-accent, #38bdf8);
+  background: rgba(56, 189, 248, 0.1);
 }
 .timer-mini-text {
   font-size: 0.65rem;
@@ -656,8 +710,8 @@ onUnmounted(() => {
   gap: 6px;
   background: rgba(17, 24, 39, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  padding: 4px 8px;
-  border-radius: 16px;
+  padding: 5px 8px;
+  border-radius: 14px;
 }
 .status-indicator {
   width: 5px;
@@ -747,7 +801,6 @@ onUnmounted(() => {
 .tab-pl-item { position: relative; padding-right: 24px; }
 .btn-del-pl { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); font-size: 0.6rem; color: #ef4444; }
 
-/* REPRODUCTOR DECK */
 .player-card {
   position: relative;
   overflow: hidden;
@@ -791,6 +844,11 @@ onUnmounted(() => {
   align-items: center;
   margin-bottom: 10px;
 }
+.badge-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 .deck-badge {
   font-size: 0.65rem;
   font-weight: 800;
@@ -802,6 +860,16 @@ onUnmounted(() => {
   border-radius: 6px;
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
+.deck-eq-badge {
+  font-size: 0.62rem;
+  font-weight: 800;
+  color: var(--theme-accent, #38bdf8);
+  background: rgba(56, 189, 248, 0.15);
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--theme-accent, #38bdf8);
+}
+
 .fav-deck-btn {
   background: rgba(0, 0, 0, 0.4);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -900,7 +968,6 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-/* Controles */
 .controls-deck {
   display: flex;
   justify-content: space-between;
@@ -992,7 +1059,6 @@ onUnmounted(() => {
 .hw-slider { flex: 1; height: 3px; accent-color: var(--theme-accent, #38bdf8); cursor: pointer; }
 .hw-vol-num { font-size: 0.7rem; font-weight: 800; color: var(--theme-accent, #38bdf8); width: 14px; text-align: right; }
 
-/* Cola Card */
 .queue-card {
   flex: 1;
   background: rgba(17, 24, 39, 0.7);

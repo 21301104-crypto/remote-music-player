@@ -2,10 +2,12 @@
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
+import net from 'net';
+import multer from 'multer';
 import * as musicMetadata from 'music-metadata';
 
 const app = express();
@@ -24,6 +26,8 @@ const DATA_DIR = path.resolve('data');
 const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
 const PLAYLISTS_FILE = path.join(DATA_DIR, 'playlists.json');
 const CACHE_FILE = path.join(DATA_DIR, 'library_cache_v2.json');
+const EQ_FILE = path.join(DATA_DIR, 'eq_settings.json');
+const MPV_SOCKET = path.resolve('mpv.sock');
 const SUPPORTED_EXTENSIONS = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'];
 
 if (!fs.existsSync(DATA_DIR)) {
@@ -52,6 +56,143 @@ const saveJSON = (file, data) => {
 let favoritesList = loadJSON(FAVORITES_FILE, []);
 let playlistsList = loadJSON(PLAYLISTS_FILE, []);
 
+// =========================================================================
+// CONFIGURACIÓN DE MULTER (WEB UPLOADER)
+// =========================================================================
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, MUSIC_DIR);
+  },
+  filename: (req, file, cb) => {
+    // Decodificar nombre UTF-8 en caso de caracteres especiales o acentos
+    const rawOriginal = Buffer.from(file.originalname, 'latin1').toString('utf8');
+    const cleanName = rawOriginal.replace(/[/\\?%*:|"<>]/g, '_');
+    cb(null, cleanName);
+  }
+});
+
+const upload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (SUPPORTED_EXTENSIONS.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Extensión no permitida: ${ext}`), false);
+    }
+  },
+  limits: { fileSize: 250 * 1024 * 1024 } // Límite de 250MB por archivo
+});
+
+// Configuración de Ecualizador
+const DEFAULT_EQ = {
+  enabled: true,
+  preset: 'bass_boost',
+  bands: [
+    { freq: 31.5, label: '31.5', gain: 6.0 },
+    { freq: 63, label: '63', gain: 6.0 },
+    { freq: 125, label: '125', gain: 4.5 },
+    { freq: 250, label: '250', gain: 2.0 },
+    { freq: 500, label: '500', gain: 0.5 },
+    { freq: 1000, label: '1k', gain: -2.0 },
+    { freq: 2000, label: '2k', gain: -1.5 },
+    { freq: 4000, label: '4k', gain: -1.0 },
+    { freq: 8000, label: '8k', gain: -1.0 },
+    { freq: 16000, label: '16k', gain: -1.0 }
+  ]
+};
+
+let eqSettings = loadJSON(EQ_FILE, DEFAULT_EQ);
+
+// =========================================================================
+// MOTOR MPV IPC
+// =========================================================================
+let mpvProcess = null;
+let mpvSocketClient = null;
+let isMpvReady = false;
+
+const buildEqualizerFilter = (eq) => {
+  if (!eq || !eq.enabled || !eq.bands || eq.bands.length === 0) return '';
+  const filters = eq.bands.map(b => `equalizer=f=${b.freq}:width_type=o:w=1:g=${b.gain}`);
+  return `lavfi=[${filters.join(',')}]`;
+};
+
+const sendMpvCommand = (commandArray) => {
+  if (!mpvSocketClient || !isMpvReady) return;
+  try {
+    const payload = JSON.stringify({ command: commandArray }) + '\n';
+    mpvSocketClient.write(payload);
+  } catch (err) {
+    console.error('[MPV IPC Write Error]:', err.message);
+  }
+};
+
+const applyEqualizerToMpv = () => {
+  const afString = buildEqualizerFilter(eqSettings);
+  sendMpvCommand(['set_property', 'af', afString]);
+};
+
+const startMpvDaemon = () => {
+  if (fs.existsSync(MPV_SOCKET)) {
+    try { fs.unlinkSync(MPV_SOCKET); } catch (e) {}
+  }
+
+  mpvProcess = spawn('mpv', [
+    '--idle=yes',
+    '--no-video',
+    `--input-ipc-server=${MPV_SOCKET}`,
+    '--audio-buffer=0.2',
+    '--gapless-audio=yes'
+  ], { stdio: 'ignore' });
+
+  mpvProcess.on('exit', () => {
+    isMpvReady = false;
+    setTimeout(startMpvDaemon, 1000);
+  });
+
+  const connectSocket = () => {
+    if (!fs.existsSync(MPV_SOCKET)) {
+      setTimeout(connectSocket, 200);
+      return;
+    }
+
+    mpvSocketClient = net.connect(MPV_SOCKET, () => {
+      console.log('✅ Conexión IPC establecida con mpv.');
+      isMpvReady = true;
+      applyEqualizerToMpv();
+    });
+
+    mpvSocketClient.on('data', (data) => {
+      const lines = data.toString().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const msg = JSON.parse(line);
+          if (msg.event === 'end-file' && msg.reason === 'eof') {
+            nextTrack(false);
+          }
+        } catch (e) {}
+      }
+    });
+
+    mpvSocketClient.on('error', () => {
+      isMpvReady = false;
+      setTimeout(connectSocket, 500);
+    });
+  };
+
+  setTimeout(connectSocket, 300);
+};
+
+startMpvDaemon();
+
+process.on('exit', () => {
+  if (mpvProcess) mpvProcess.kill();
+  if (fs.existsSync(MPV_SOCKET)) {
+    try { fs.unlinkSync(MPV_SOCKET); } catch (e) {}
+  }
+});
+
+// Normalizador y Escaneo
 const isNumeric = (str) => typeof str === 'string' && /^\d+$/.test(str.trim());
 
 const normalizeGenre = (rawGenre) => {
@@ -208,19 +349,70 @@ app.get('/api/cover', async (req, res) => {
   res.status(404).send('Sin carátula');
 });
 
+// =========================================================================
+// ENDPOINT DE CARGA DE ARCHIVOS (WEB UPLOADER)
+// =========================================================================
+app.post('/api/upload', upload.array('audioFiles', 100), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No se subió ningún archivo' });
+    }
+
+    console.log(`📥 [Upload] ${req.files.length} archivo(s) recibido(s). Indexando...`);
+    const newIndexedTracks = [];
+
+    for (let i = 0; i < req.files.length; i++) {
+      const file = req.files[i];
+      const relPath = path.relative(MUSIC_DIR, file.path);
+      const parsedMeta = await parseTrackID3(relPath);
+
+      // Verificar si ya existe en la biblioteca para no duplicar IDs
+      const existingIdx = masterLibrary.findIndex(t => t.path === relPath);
+      const trackObj = {
+        id: existingIdx !== -1 ? masterLibrary[existingIdx].id : masterLibrary.length + newIndexedTracks.length + 1,
+        ...parsedMeta
+      };
+
+      if (existingIdx !== -1) {
+        masterLibrary[existingIdx] = trackObj;
+      } else {
+        newIndexedTracks.push(trackObj);
+      }
+    }
+
+    if (newIndexedTracks.length > 0) {
+      masterLibrary.push(...newIndexedTracks);
+    }
+
+    saveJSON(CACHE_FILE, masterLibrary);
+    rebuildQueue();
+    broadcastState();
+
+    console.log(`✅ [Upload Completo] ${req.files.length} pista(s) agregada(s) y transmitidas a los clientes.`);
+
+    res.json({
+      success: true,
+      message: `${req.files.length} archivo(s) subido(s) con éxito`,
+      uploadedCount: req.files.length
+    });
+  } catch (err) {
+    console.error('❌ [Upload Error]:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Estado Global
 let masterLibrary = [];
 let activeQueue = [];
 let currentIndex = 0;
 let isShuffle = false;
-let repeatMode = 'all'; // 'off' | 'all' | 'one'
+let repeatMode = 'all';
 let currentFilterMode = 'all';
 let selectedArtist = null;
 let selectedGenre = null;
 let selectedPlaylistId = null;
 let currentVolume = 10;
 let isPlaying = false;
-let trackTimer = null;
 
 let playStartTime = 0;
 let elapsedOffset = 0;
@@ -276,13 +468,11 @@ const startSleepTimer = (minutes) => {
       sleepTimerEndsAt = 0;
       isFadingOut = false;
 
-      clearTrackTimer();
-      exec('termux-media-player pause', () => {
-        isPlaying = false;
-        currentVolume = sleepTimerBaseVolume;
-        exec(`termux-volume music ${currentVolume}`);
-        broadcastState();
-      });
+      sendMpvCommand(['set_property', 'pause', true]);
+      isPlaying = false;
+      currentVolume = sleepTimerBaseVolume;
+      exec(`termux-volume music ${currentVolume}`);
+      broadcastState();
       return;
     }
     broadcastState();
@@ -303,13 +493,6 @@ const cancelSleepTimer = (restoreVolume = true) => {
   sleepTimerEndsAt = 0;
   isFadingOut = false;
   broadcastState();
-};
-
-const clearTrackTimer = () => {
-  if (trackTimer) {
-    clearTimeout(trackTimer);
-    trackTimer = null;
-  }
 };
 
 const shuffleArray = (array) => {
@@ -366,6 +549,7 @@ const broadcastState = () => {
     masterLibrary,
     favorites: favoritesList,
     playlists: playlistsList,
+    eqSettings,
     playStartTime,
     elapsedOffset,
     sleepTimer: getSleepTimerState()
@@ -412,7 +596,6 @@ const initLibrary = async () => {
 initLibrary();
 
 const playCurrentTrack = async () => {
-  clearTrackTimer();
   if (!activeQueue.length) return;
   if (currentIndex < 0 || currentIndex >= activeQueue.length) currentIndex = 0;
 
@@ -423,67 +606,38 @@ const playCurrentTrack = async () => {
   currentTrackData = meta;
   elapsedOffset = 0;
 
-  exec(`termux-media-player play "${absolutePath}"`, (err) => {
-    if (!err) {
-      isPlaying = true;
-      playStartTime = Date.now();
-      broadcastState();
+  sendMpvCommand(['loadfile', absolutePath, 'replace']);
+  applyEqualizerToMpv();
 
-      if (meta.duration && meta.duration > 2) {
-        trackTimer = setTimeout(() => {
-          nextTrack(false); // Transición automática
-        }, (meta.duration + 1) * 1000);
-      }
-    }
-  });
+  isPlaying = true;
+  playStartTime = Date.now();
+  broadcastState();
 };
 
-// Motor de Transición con Soporte para Repeat Mode
 const nextTrack = (isManual = false) => {
-  clearTrackTimer();
   if (!activeQueue.length) return;
 
-  // 1. Si terminó sola y está en modo 'REPETIR UNA', reiniciar la misma
   if (!isManual && repeatMode === 'one') {
     playCurrentTrack();
     return;
   }
 
-  // 2. Si terminó sola, está en modo 'OFF' y llegó al final de la lista, detener
   if (!isManual && repeatMode === 'off' && currentIndex === activeQueue.length - 1) {
-    exec('termux-media-player pause', () => {
-      isPlaying = false;
-      broadcastState();
-    });
+    sendMpvCommand(['set_property', 'pause', true]);
+    isPlaying = false;
+    broadcastState();
     return;
   }
 
-  // 3. Avance estándar (o 'all')
   currentIndex = (currentIndex + 1) % activeQueue.length;
   playCurrentTrack();
 };
 
 const prevTrack = () => {
-  clearTrackTimer();
   if (!activeQueue.length) return;
   currentIndex = (currentIndex - 1 + activeQueue.length) % activeQueue.length;
   playCurrentTrack();
 };
-
-// Hardware Watchdog
-setInterval(() => {
-  if (!isPlaying) return;
-  if (Date.now() - playStartTime < 3000) return;
-
-  exec('termux-media-player info', (err, stdout) => {
-    if (err) return;
-    const output = (stdout || '').toLowerCase();
-    if (output.includes('stopped') || output.includes('no track')) {
-      clearTrackTimer();
-      nextTrack(false);
-    }
-  });
-}, 2000);
 
 app.get('/api/library', (req, res) => {
   res.json({
@@ -494,6 +648,7 @@ app.get('/api/library', (req, res) => {
     currentTrack: currentTrackData,
     isPlaying,
     repeatMode,
+    eqSettings,
     playStartTime,
     elapsedOffset,
     sleepTimer: getSleepTimerState()
@@ -515,6 +670,7 @@ io.on('connection', (socket) => {
     masterLibrary,
     favorites: favoritesList,
     playlists: playlistsList,
+    eqSettings,
     playStartTime,
     elapsedOffset,
     sleepTimer: getSleepTimerState()
@@ -532,35 +688,23 @@ io.on('connection', (socket) => {
 
   socket.on('toggle_play', () => {
     if (isPlaying) {
-      clearTrackTimer();
       elapsedOffset += (Date.now() - playStartTime) / 1000;
-      exec('termux-media-player pause', (err) => {
-        if (!err) {
-          isPlaying = false;
-          broadcastState();
-        }
-      });
+      sendMpvCommand(['set_property', 'pause', true]);
+      isPlaying = false;
+      broadcastState();
     } else {
       if (currentTrackData.path) {
-        exec('termux-media-player play', (err) => {
-          if (!err) {
-            isPlaying = true;
-            playStartTime = Date.now();
-            broadcastState();
-
-            const remainingSecs = Math.max(currentTrackData.duration - elapsedOffset, 1);
-            trackTimer = setTimeout(() => nextTrack(false), (remainingSecs + 1) * 1000);
-          } else {
-            playCurrentTrack();
-          }
-        });
+        sendMpvCommand(['set_property', 'pause', false]);
+        isPlaying = true;
+        playStartTime = Date.now();
+        broadcastState();
       } else {
         playCurrentTrack();
       }
     }
   });
 
-  socket.on('next', () => nextTrack(true)); // Manual
+  socket.on('next', () => nextTrack(true));
   socket.on('prev', prevTrack);
 
   socket.on('toggle_shuffle', () => {
@@ -569,15 +713,17 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  // Ciclo Tri-Estado: 'all' -> 'one' -> 'off' -> 'all'
   socket.on('toggle_repeat', () => {
-    if (repeatMode === 'all') {
-      repeatMode = 'one';
-    } else if (repeatMode === 'one') {
-      repeatMode = 'off';
-    } else {
-      repeatMode = 'all';
-    }
+    if (repeatMode === 'all') repeatMode = 'one';
+    else if (repeatMode === 'one') repeatMode = 'off';
+    else repeatMode = 'all';
+    broadcastState();
+  });
+
+  socket.on('set_eq', (newEq) => {
+    eqSettings = newEq;
+    saveJSON(EQ_FILE, eqSettings);
+    applyEqualizerToMpv();
     broadcastState();
   });
 
@@ -652,4 +798,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = 3000;
-httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Motor activo en puerto ${PORT}`));
+httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor con Web Uploader activo en puerto ${PORT}`));
