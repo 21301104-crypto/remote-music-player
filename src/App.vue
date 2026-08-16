@@ -1,6 +1,6 @@
 <!-- src/App.vue -->
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { io } from 'socket.io-client';
 
 const BACKEND_URL = import.meta.env.DEV
@@ -9,11 +9,11 @@ const BACKEND_URL = import.meta.env.DEV
 
 const socket = io(BACKEND_URL);
 
-// Estados
+// Estados Sincronizados
 const isConnected = ref(false);
 const masterLibrary = ref([]);
 const queue = ref([]);
-const currentTrack = ref({ path: null, title: null, artist: null, album: null, duration: 0, hasCover: false });
+const currentTrack = ref({ path: null, title: null, artist: null, album: null, duration: 0 });
 const isPlaying = ref(false);
 const isShuffle = ref(false);
 const selectedArtist = ref(null);
@@ -21,7 +21,28 @@ const volume = ref(10);
 const searchQuery = ref('');
 const imageError = ref(false);
 
-// URL calculada para la carátula integrada
+// Variables de Tiempo
+const playStartTime = ref(0);
+const elapsedOffset = ref(0);
+const currentTime = ref(0);
+let progressInterval = null;
+
+// Formateador de segundos a mm:ss
+const formatTime = (seconds) => {
+  if (!seconds || isNaN(seconds) || seconds < 0) return '0:00';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+};
+
+// Porcentaje de la barra de progreso
+const progressPercent = computed(() => {
+  if (!currentTrack.value.duration || currentTrack.value.duration === 0) return 0;
+  const pct = (currentTime.value / currentTrack.value.duration) * 100;
+  return Math.min(Math.max(pct, 0), 100);
+});
+
+// URL de la carátula
 const coverUrl = computed(() => {
   if (!currentTrack.value.path || imageError.value) return null;
   return `${BACKEND_URL}/api/cover?path=${encodeURIComponent(currentTrack.value.path)}`;
@@ -45,6 +66,22 @@ const displayedQueue = computed(() => {
     track.artist.toLowerCase().includes(searchQuery.value.toLowerCase())
   );
 });
+
+// Loop de interpolación en el cliente (cada 250ms)
+const startProgressTicker = () => {
+  if (progressInterval) clearInterval(progressInterval);
+  progressInterval = setInterval(() => {
+    if (isPlaying.value && playStartTime.value > 0) {
+      const liveSeconds = (Date.now() - playStartTime.value) / 1000;
+      currentTime.value = Math.min(
+        elapsedOffset.value + liveSeconds,
+        currentTrack.value.duration || Infinity
+      );
+    } else {
+      currentTime.value = elapsedOffset.value;
+    }
+  }, 250);
+};
 
 // Acciones de control
 const playTrack = (track) => {
@@ -74,6 +111,8 @@ const changeVolume = () => {
 };
 
 onMounted(() => {
+  startProgressTicker();
+
   socket.on('connect', () => { isConnected.value = true; });
   socket.on('disconnect', () => { isConnected.value = false; });
 
@@ -83,15 +122,22 @@ onMounted(() => {
     selectedArtist.value = state.selectedArtist;
     if (state.currentVolume !== undefined) volume.value = state.currentVolume;
     
-    // Si cambió la canción, reiniciamos el indicador de error de imagen
+    playStartTime.value = state.playStartTime || 0;
+    elapsedOffset.value = state.elapsedOffset || 0;
+
     if (currentTrack.value.path !== state.currentTrack?.path) {
       imageError.value = false;
+      currentTime.value = 0;
     }
 
-    currentTrack.value = state.currentTrack || {};
+    currentTrack.value = state.currentTrack || { duration: 0 };
     queue.value = state.queue || [];
     masterLibrary.value = state.masterLibrary || [];
   });
+});
+
+onUnmounted(() => {
+  if (progressInterval) clearInterval(progressInterval);
 });
 </script>
 
@@ -125,7 +171,7 @@ onMounted(() => {
       </button>
     </section>
 
-    <!-- Reproductor Principal -->
+    <!-- Tarjeta Principal del Reproductor -->
     <section class="player-card">
       <div class="cover-box">
         <img 
@@ -146,7 +192,18 @@ onMounted(() => {
         <p v-if="currentTrack.album" class="album">💽 {{ currentTrack.album }}</p>
       </div>
 
-      <!-- Controles -->
+      <!-- Barra de Progreso Dinámica -->
+      <div class="progress-section">
+        <div class="progress-bar-wrapper">
+          <div class="progress-bar-fill" :style="{ width: `${progressPercent}%` }"></div>
+        </div>
+        <div class="time-row">
+          <span class="time-text">{{ formatTime(currentTime) }}</span>
+          <span class="time-text">{{ formatTime(currentTrack.duration) }}</span>
+        </div>
+      </div>
+
+      <!-- Controles de Reproducción -->
       <div class="controls-row">
         <button 
           class="btn-icon" 
@@ -264,10 +321,25 @@ onMounted(() => {
   justify-content: center; font-size: 3.5rem; border: 1px dashed #334155;
 }
 
-.track-details { text-align: center; margin-bottom: 16px; }
+.track-details { text-align: center; margin-bottom: 14px; }
 .title { margin: 0 0 4px 0; font-size: 1.15rem; font-weight: 700; word-break: break-word; }
 .artist { margin: 0 0 4px 0; font-size: 0.95rem; color: #38bdf8; font-weight: 500; }
 .album { margin: 0; font-size: 0.8rem; color: #94a3b8; }
+
+/* Estilos de la Barra de Progreso */
+.progress-section { margin-bottom: 16px; }
+.progress-bar-wrapper {
+  width: 100%; height: 6px; background-color: #0f172a;
+  border-radius: 3px; overflow: hidden; position: relative;
+}
+.progress-bar-fill {
+  height: 100%; background: linear-gradient(90deg, #38bdf8, #818cf8);
+  border-radius: 3px; transition: width 0.25s linear;
+}
+.time-row {
+  display: flex; justify-content: space-between;
+  margin-top: 6px; font-size: 0.75rem; color: #94a3b8; font-variant-numeric: tabular-nums;
+}
 
 .controls-row {
   display: flex; justify-content: center; align-items: center;

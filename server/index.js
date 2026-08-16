@@ -12,7 +12,7 @@ const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: { origin: '*' },
-  maxHttpBufferSize: 1e8 // 100MB buffer
+  maxHttpBufferSize: 1e8
 });
 
 app.use(cors());
@@ -22,7 +22,7 @@ app.use(express.static('dist'));
 const MUSIC_DIR = '/storage/9C33-6BBD/Music';
 const SUPPORTED_EXTENSIONS = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'];
 
-// 1. Escaneo del sistema de archivos
+// 1. Escaneo de archivos
 const scanMusicDirectory = (dirPath, arrayOfFiles = []) => {
   try {
     if (!fs.existsSync(dirPath)) return arrayOfFiles;
@@ -46,14 +46,13 @@ const scanMusicDirectory = (dirPath, arrayOfFiles = []) => {
   return arrayOfFiles;
 };
 
-// 2. Extraer metadatos y duración
+// 2. Extracción de metadatos ID3
 const getTrackMetadata = async (relativePath) => {
   const absolutePath = path.join(MUSIC_DIR, relativePath);
   try {
     const metadata = await musicMetadata.parseFile(absolutePath);
     const { title, artist, album, year } = metadata.common;
     const duration = metadata.format.duration || 0;
-    const hasCover = !!(metadata.common.picture && metadata.common.picture.length > 0);
 
     const rawName = path.basename(relativePath, path.extname(relativePath));
     const parts = rawName.split(' - ');
@@ -64,8 +63,7 @@ const getTrackMetadata = async (relativePath) => {
       artist: artist || (parts.length > 1 ? parts[0].trim() : 'Varios'),
       album: album || 'MicroSD Audio',
       year: year || null,
-      duration: Math.round(duration),
-      hasCover
+      duration: Math.round(duration)
     };
   } catch (err) {
     const rawName = path.basename(relativePath, path.extname(relativePath));
@@ -76,13 +74,12 @@ const getTrackMetadata = async (relativePath) => {
       artist: parts.length > 1 ? parts[0].trim() : 'Varios',
       album: 'MicroSD Audio',
       year: null,
-      duration: 0,
-      hasCover: false
+      duration: 0
     };
   }
 };
 
-// 3. Endpoint HTTP dedicado para servir carátulas integradas
+// 3. Endpoint para carátulas binarias
 app.get('/api/cover', async (req, res) => {
   const relativePath = req.query.path;
   if (!relativePath) return res.status(400).send('Falta ruta');
@@ -102,12 +99,12 @@ app.get('/api/cover', async (req, res) => {
       return res.send(picture.data);
     }
   } catch (e) {
-    // Si falla el parseo, no hay carátula
+    // Si no hay portada en el archivo
   }
   res.status(404).send('Sin carátula');
 });
 
-// 4. Motor de Reproducción Continua
+// 4. Estado centralizado y control de sincronización temporal
 let masterLibrary = [];
 let activeQueue = [];
 let currentIndex = 0;
@@ -116,8 +113,18 @@ let selectedArtist = null;
 let currentVolume = 10;
 let isPlaying = false;
 let trackTimer = null;
+
+// Variables de interpolación temporal
 let playStartTime = 0;
-let currentTrackData = { path: null, title: null, artist: null, album: null, duration: 0, hasCover: false };
+let elapsedOffset = 0; // Segundos acumulados antes de pausar
+
+let currentTrackData = {
+  path: null,
+  title: null,
+  artist: null,
+  album: null,
+  duration: 0
+};
 
 const clearTrackTimer = () => {
   if (trackTimer) {
@@ -157,6 +164,7 @@ const initLibrary = () => {
     const rawName = path.basename(relPath, path.extname(relPath));
     const parts = rawName.split(' - ');
     const folderName = path.dirname(relPath);
+
     let artist = 'Varios';
     let title = rawName;
 
@@ -182,7 +190,9 @@ const broadcastState = () => {
     currentVolume,
     currentTrack: currentTrackData,
     queue: activeQueue,
-    masterLibrary
+    masterLibrary,
+    playStartTime,
+    elapsedOffset
   });
 };
 
@@ -196,6 +206,7 @@ const playCurrentTrack = async () => {
 
   const meta = await getTrackMetadata(track.path);
   currentTrackData = meta;
+  elapsedOffset = 0;
 
   exec(`termux-media-player play "${absolutePath}"`, (err) => {
     if (!err) {
@@ -203,11 +214,8 @@ const playCurrentTrack = async () => {
       playStartTime = Date.now();
       broadcastState();
 
-      // Temporizador de duración exacta para encadenar canciones
       if (meta.duration && meta.duration > 2) {
-        console.log(`⏱️ Siguiente pista programada en ${meta.duration} segundos.`);
         trackTimer = setTimeout(() => {
-          console.log('🔄 Duración completada. Avanzando a la siguiente canción...');
           nextTrack();
         }, (meta.duration + 1) * 1000);
       }
@@ -229,7 +237,7 @@ const prevTrack = () => {
   playCurrentTrack();
 };
 
-// 5. Monitor de Hardware de Respaldo
+// 5. Monitor de seguridad por si el temporizador se desincroniza
 setInterval(() => {
   if (!isPlaying) return;
   if (Date.now() - playStartTime < 3000) return;
@@ -238,16 +246,22 @@ setInterval(() => {
     if (err) return;
     const output = (stdout || '').toLowerCase();
     if (output.includes('stopped') || output.includes('no track')) {
-      console.log('📻 Hardware en reposo. Avanzando de pista...');
       clearTrackTimer();
       nextTrack();
     }
   });
 }, 2000);
 
-// 6. REST y Sockets
+// 6. Endpoints y Sockets
 app.get('/api/library', (req, res) => {
-  res.json({ masterLibrary, activeQueue, currentTrack: currentTrackData, isPlaying });
+  res.json({
+    masterLibrary,
+    activeQueue,
+    currentTrack: currentTrackData,
+    isPlaying,
+    playStartTime,
+    elapsedOffset
+  });
 });
 
 io.on('connection', (socket) => {
@@ -258,7 +272,9 @@ io.on('connection', (socket) => {
     currentVolume,
     currentTrack: currentTrackData,
     queue: activeQueue,
-    masterLibrary
+    masterLibrary,
+    playStartTime,
+    elapsedOffset
   });
 
   socket.on('play_track', (targetPath) => {
@@ -274,6 +290,8 @@ io.on('connection', (socket) => {
   socket.on('toggle_play', () => {
     if (isPlaying) {
       clearTrackTimer();
+      // Calcular tiempo acumulado antes de pausar
+      elapsedOffset += (Date.now() - playStartTime) / 1000;
       exec('termux-media-player pause', (err) => {
         if (!err) {
           isPlaying = false;
@@ -288,10 +306,8 @@ io.on('connection', (socket) => {
           if (!err) {
             isPlaying = true;
             broadcastState();
-            // Reanudar temporizador con tiempo restante aproximado
-            if (currentTrackData.duration > 5) {
-              trackTimer = setTimeout(() => nextTrack(), currentTrackData.duration * 1000);
-            }
+            const remainingSecs = Math.max(currentTrackData.duration - elapsedOffset, 1);
+            trackTimer = setTimeout(() => nextTrack(), remainingSecs * 1000);
           }
         });
       } else {
@@ -324,4 +340,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = 3000;
-httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Motor de audio activo en puerto ${PORT}`));
+httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Motor activo en puerto ${PORT}`));
