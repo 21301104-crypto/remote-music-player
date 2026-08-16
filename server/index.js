@@ -20,9 +20,38 @@ app.use(express.json());
 app.use(express.static('dist'));
 
 const MUSIC_DIR = '/storage/9C33-6BBD/Music';
+const DATA_DIR = path.resolve('data');
+const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
 const SUPPORTED_EXTENSIONS = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'];
 
-// 1. Escaneo de archivos
+// 1. Asegurar persistencia de datos
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const loadFavorites = () => {
+  try {
+    if (fs.existsSync(FAVORITES_FILE)) {
+      const data = fs.readFileSync(FAVORITES_FILE, 'utf-8');
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error('[Storage Error] Leyendo favoritos:', err.message);
+  }
+  return [];
+};
+
+const saveFavorites = (favoritesArray) => {
+  try {
+    fs.writeFileSync(FAVORITES_FILE, JSON.stringify(favoritesArray, null, 2));
+  } catch (err) {
+    console.error('[Storage Error] Guardando favoritos:', err.message);
+  }
+};
+
+let favoritesList = loadFavorites();
+
+// 2. Escaneo recursivo
 const scanMusicDirectory = (dirPath, arrayOfFiles = []) => {
   try {
     if (!fs.existsSync(dirPath)) return arrayOfFiles;
@@ -46,7 +75,7 @@ const scanMusicDirectory = (dirPath, arrayOfFiles = []) => {
   return arrayOfFiles;
 };
 
-// 2. Extracción de metadatos ID3
+// 3. Metadatos ID3
 const getTrackMetadata = async (relativePath) => {
   const absolutePath = path.join(MUSIC_DIR, relativePath);
   try {
@@ -79,7 +108,7 @@ const getTrackMetadata = async (relativePath) => {
   }
 };
 
-// 3. Endpoint para carátulas binarias
+// 4. Endpoint para carátulas integradas
 app.get('/api/cover', async (req, res) => {
   const relativePath = req.query.path;
   if (!relativePath) return res.status(400).send('Falta ruta');
@@ -99,24 +128,23 @@ app.get('/api/cover', async (req, res) => {
       return res.send(picture.data);
     }
   } catch (e) {
-    // Si no hay portada en el archivo
+    // Si no hay imagen en ID3
   }
   res.status(404).send('Sin carátula');
 });
 
-// 4. Estado centralizado y control de sincronización temporal
+// 5. Estado del Motor de Audio
 let masterLibrary = [];
 let activeQueue = [];
 let currentIndex = 0;
 let isShuffle = false;
+let currentFilterMode = 'all'; // 'all' | 'favorites' | 'artist'
 let selectedArtist = null;
 let currentVolume = 10;
 let isPlaying = false;
 let trackTimer = null;
-
-// Variables de interpolación temporal
 let playStartTime = 0;
-let elapsedOffset = 0; // Segundos acumulados antes de pausar
+let elapsedOffset = 0;
 
 let currentTrackData = {
   path: null,
@@ -143,11 +171,20 @@ const shuffleArray = (array) => {
 };
 
 const rebuildQueue = (startPath = null) => {
-  let list = selectedArtist
-    ? masterLibrary.filter(t => t.artist === selectedArtist)
-    : [...masterLibrary];
+  let list = [];
 
-  if (isShuffle) { list = shuffleArray(list); }
+  if (currentFilterMode === 'favorites') {
+    list = masterLibrary.filter(t => favoritesList.includes(t.path));
+  } else if (currentFilterMode === 'artist' && selectedArtist) {
+    list = masterLibrary.filter(t => t.artist === selectedArtist);
+  } else {
+    list = [...masterLibrary];
+  }
+
+  if (isShuffle) {
+    list = shuffleArray(list);
+  }
+
   activeQueue = list;
 
   if (startPath) {
@@ -186,11 +223,13 @@ const broadcastState = () => {
   io.emit('state_changed', {
     isPlaying,
     isShuffle,
+    currentFilterMode,
     selectedArtist,
     currentVolume,
     currentTrack: currentTrackData,
     queue: activeQueue,
     masterLibrary,
+    favorites: favoritesList,
     playStartTime,
     elapsedOffset
   });
@@ -237,7 +276,7 @@ const prevTrack = () => {
   playCurrentTrack();
 };
 
-// 5. Monitor de seguridad por si el temporizador se desincroniza
+// 6. Monitor de Hardware de Respaldo
 setInterval(() => {
   if (!isPlaying) return;
   if (Date.now() - playStartTime < 3000) return;
@@ -252,11 +291,12 @@ setInterval(() => {
   });
 }, 2000);
 
-// 6. Endpoints y Sockets
+// 7. REST y WebSockets
 app.get('/api/library', (req, res) => {
   res.json({
     masterLibrary,
     activeQueue,
+    favorites: favoritesList,
     currentTrack: currentTrackData,
     isPlaying,
     playStartTime,
@@ -268,11 +308,13 @@ io.on('connection', (socket) => {
   socket.emit('state_changed', {
     isPlaying,
     isShuffle,
+    currentFilterMode,
     selectedArtist,
     currentVolume,
     currentTrack: currentTrackData,
     queue: activeQueue,
     masterLibrary,
+    favorites: favoritesList,
     playStartTime,
     elapsedOffset
   });
@@ -290,7 +332,6 @@ io.on('connection', (socket) => {
   socket.on('toggle_play', () => {
     if (isPlaying) {
       clearTrackTimer();
-      // Calcular tiempo acumulado antes de pausar
       elapsedOffset += (Date.now() - playStartTime) / 1000;
       exec('termux-media-player pause', (err) => {
         if (!err) {
@@ -325,10 +366,29 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  socket.on('filter_artist', (artist) => {
-    selectedArtist = artist;
+  // Filtrar por Todos, Favoritos o Artista
+  socket.on('set_filter', ({ mode, artist }) => {
+    currentFilterMode = mode;
+    selectedArtist = artist || null;
     rebuildQueue();
-    playCurrentTrack();
+    broadcastState();
+  });
+
+  // Toggle Favorito y persistencia
+  socket.on('toggle_favorite', (trackPath) => {
+    if (favoritesList.includes(trackPath)) {
+      favoritesList = favoritesList.filter(p => p !== trackPath);
+    } else {
+      favoritesList.push(trackPath);
+    }
+    saveFavorites(favoritesList);
+
+    // Si estábamos viendo la lista de favoritos, actualizamos la cola en caliente
+    if (currentFilterMode === 'favorites') {
+      rebuildQueue(currentTrackData.path);
+    }
+
+    broadcastState();
   });
 
   socket.on('set_volume', (level) => {
@@ -340,4 +400,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = 3000;
-httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Motor activo en puerto ${PORT}`));
+httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Motor activo con favoritos en puerto ${PORT}`));

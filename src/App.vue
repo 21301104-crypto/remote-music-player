@@ -13,10 +13,12 @@ const socket = io(BACKEND_URL);
 const isConnected = ref(false);
 const masterLibrary = ref([]);
 const queue = ref([]);
+const favorites = ref([]);
+const currentFilterMode = ref('all'); // 'all' | 'favorites' | 'artist'
+const selectedArtist = ref(null);
 const currentTrack = ref({ path: null, title: null, artist: null, album: null, duration: 0 });
 const isPlaying = ref(false);
 const isShuffle = ref(false);
-const selectedArtist = ref(null);
 const volume = ref(10);
 const searchQuery = ref('');
 const imageError = ref(false);
@@ -27,7 +29,6 @@ const elapsedOffset = ref(0);
 const currentTime = ref(0);
 let progressInterval = null;
 
-// Formateador de segundos a mm:ss
 const formatTime = (seconds) => {
   if (!seconds || isNaN(seconds) || seconds < 0) return '0:00';
   const mins = Math.floor(seconds / 60);
@@ -35,14 +36,12 @@ const formatTime = (seconds) => {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 };
 
-// Porcentaje de la barra de progreso
 const progressPercent = computed(() => {
   if (!currentTrack.value.duration || currentTrack.value.duration === 0) return 0;
   const pct = (currentTime.value / currentTrack.value.duration) * 100;
   return Math.min(Math.max(pct, 0), 100);
 });
 
-// URL de la carátula
 const coverUrl = computed(() => {
   if (!currentTrack.value.path || imageError.value) return null;
   return `${BACKEND_URL}/api/cover?path=${encodeURIComponent(currentTrack.value.path)}`;
@@ -50,6 +49,11 @@ const coverUrl = computed(() => {
 
 const handleImageError = () => {
   imageError.value = true;
+};
+
+// Saber si una pista es favorita
+const isTrackFavorite = (path) => {
+  return favorites.value.includes(path);
 };
 
 // Artistas únicos
@@ -67,7 +71,7 @@ const displayedQueue = computed(() => {
   );
 });
 
-// Loop de interpolación en el cliente (cada 250ms)
+// Interpolación temporal
 const startProgressTicker = () => {
   if (progressInterval) clearInterval(progressInterval);
   progressInterval = setInterval(() => {
@@ -83,7 +87,7 @@ const startProgressTicker = () => {
   }, 250);
 };
 
-// Acciones de control
+// Acciones de Reproducción
 const playTrack = (track) => {
   imageError.value = false;
   socket.emit('play_track', track.path);
@@ -100,10 +104,16 @@ const prevTrack = () => {
 };
 const toggleShuffle = () => socket.emit('toggle_shuffle');
 
-const filterByArtist = (artist) => {
+// Acciones de Filtro
+const setFilter = (mode, artist = null) => {
   imageError.value = false;
-  const newArtist = selectedArtist.value === artist ? null : artist;
-  socket.emit('filter_artist', newArtist);
+  socket.emit('set_filter', { mode, artist });
+};
+
+// Toggle Favoritos
+const toggleFavorite = (trackPath, event) => {
+  if (event) event.stopPropagation();
+  socket.emit('toggle_favorite', trackPath);
 };
 
 const changeVolume = () => {
@@ -119,9 +129,11 @@ onMounted(() => {
   socket.on('state_changed', (state) => {
     isPlaying.value = state.isPlaying;
     isShuffle.value = state.isShuffle;
+    currentFilterMode.value = state.currentFilterMode;
     selectedArtist.value = state.selectedArtist;
+    favorites.value = state.favorites || [];
     if (state.currentVolume !== undefined) volume.value = state.currentVolume;
-    
+
     playStartTime.value = state.playStartTime || 0;
     elapsedOffset.value = state.elapsedOffset || 0;
 
@@ -151,21 +163,33 @@ onUnmounted(() => {
       </div>
     </header>
 
-    <!-- Filtro de Artistas -->
-    <section class="artist-section" v-if="uniqueArtists.length > 0">
+    <!-- Filtros de Navegación -->
+    <section class="artist-section">
+      <!-- Todos -->
       <button 
         class="chip" 
-        :class="{ active: selectedArtist === null }" 
-        @click="filterByArtist(null)"
+        :class="{ active: currentFilterMode === 'all' }" 
+        @click="setFilter('all')"
       >
         Todos ({{ masterLibrary.length }})
       </button>
+
+      <!-- Favoritos -->
+      <button 
+        class="chip chip-fav" 
+        :class="{ active: currentFilterMode === 'favorites' }" 
+        @click="setFilter('favorites')"
+      >
+        ❤️ Favoritos ({{ favorites.length }})
+      </button>
+
+      <!-- Artistas -->
       <button 
         v-for="artist in uniqueArtists" 
         :key="artist"
         class="chip"
-        :class="{ active: selectedArtist === artist }"
-        @click="filterByArtist(artist)"
+        :class="{ active: currentFilterMode === 'artist' && selectedArtist === artist }"
+        @click="setFilter('artist', artist)"
       >
         {{ artist }}
       </button>
@@ -184,6 +208,17 @@ onUnmounted(() => {
         <div v-else class="placeholder-cover">
           <span>🎧</span>
         </div>
+
+        <!-- Botón Flotante de Favorito en Carátula -->
+        <button 
+          v-if="currentTrack.path"
+          class="btn-fav-floating"
+          :class="{ is_fav: isTrackFavorite(currentTrack.path) }"
+          @click="toggleFavorite(currentTrack.path)"
+          title="Marcar Favorito"
+        >
+          {{ isTrackFavorite(currentTrack.path) ? '❤️' : '🤍' }}
+        </button>
       </div>
 
       <div class="track-details">
@@ -192,7 +227,7 @@ onUnmounted(() => {
         <p v-if="currentTrack.album" class="album">💽 {{ currentTrack.album }}</p>
       </div>
 
-      <!-- Barra de Progreso Dinámica -->
+      <!-- Barra de Progreso -->
       <div class="progress-section">
         <div class="progress-bar-wrapper">
           <div class="progress-bar-fill" :style="{ width: `${progressPercent}%` }"></div>
@@ -203,7 +238,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- Controles de Reproducción -->
+      <!-- Controles -->
       <div class="controls-row">
         <button 
           class="btn-icon" 
@@ -259,12 +294,23 @@ onUnmounted(() => {
             <span class="t-title">{{ track.title }}</span>
             <span class="t-artist">{{ track.artist }}</span>
           </div>
-          <span class="indicator" v-if="currentTrack.path === track.path">
-            {{ isPlaying ? '🔊' : '❚❚' }}
-          </span>
+
+          <div class="track-actions">
+            <!-- Botón de Favorito por Fila -->
+            <button 
+              class="btn-fav-row" 
+              @click="toggleFavorite(track.path, $event)"
+              title="Favorito"
+            >
+              {{ isTrackFavorite(track.path) ? '❤️' : '🤍' }}
+            </button>
+            <span class="indicator" v-if="currentTrack.path === track.path">
+              {{ isPlaying ? '🔊' : '❚❚' }}
+            </span>
+          </div>
         </li>
       </ul>
-      <p v-else class="empty">No hay canciones disponibles.</p>
+      <p v-else class="empty">No hay canciones disponibles para este filtro.</p>
     </section>
   </main>
 </template>
@@ -302,6 +348,7 @@ onUnmounted(() => {
   white-space: nowrap; cursor: pointer; transition: all 0.2s ease;
 }
 .chip.active { background: #38bdf8; color: #0b0f19; border-color: #38bdf8; font-weight: bold; }
+.chip-fav.active { background: #ec4899; color: #ffffff; border-color: #ec4899; }
 
 .player-card {
   background: #1e293b; border-radius: 16px; padding: 20px;
@@ -309,7 +356,7 @@ onUnmounted(() => {
   box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);
 }
 
-.cover-box { display: flex; justify-content: center; margin-bottom: 14px; }
+.cover-box { display: flex; justify-content: center; position: relative; margin-bottom: 14px; }
 .album-cover {
   width: 170px; height: 170px; object-fit: cover;
   border-radius: 12px; border: 1px solid #475569;
@@ -321,12 +368,21 @@ onUnmounted(() => {
   justify-content: center; font-size: 3.5rem; border: 1px dashed #334155;
 }
 
+.btn-fav-floating {
+  position: absolute; right: 125px; bottom: 8px;
+  background: rgba(15, 23, 42, 0.85); border: 1px solid #334155;
+  border-radius: 50%; width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.1rem; cursor: pointer; backdrop-filter: blur(4px);
+  transition: transform 0.15s ease;
+}
+.btn-fav-floating:active { transform: scale(1.15); }
+
 .track-details { text-align: center; margin-bottom: 14px; }
 .title { margin: 0 0 4px 0; font-size: 1.15rem; font-weight: 700; word-break: break-word; }
 .artist { margin: 0 0 4px 0; font-size: 0.95rem; color: #38bdf8; font-weight: 500; }
 .album { margin: 0; font-size: 0.8rem; color: #94a3b8; }
 
-/* Estilos de la Barra de Progreso */
 .progress-section { margin-bottom: 16px; }
 .progress-bar-wrapper {
   width: 100%; height: 6px; background-color: #0f172a;
@@ -388,9 +444,16 @@ onUnmounted(() => {
 .track-list li.active {
   border-left: 4px solid #38bdf8; background: #1a2234; color: #38bdf8; font-weight: 600;
 }
-.meta { display: flex; flex-direction: column; }
+.meta { display: flex; flex-direction: column; flex: 1; }
 .t-title { font-size: 0.9rem; word-break: break-all; }
 .t-artist { font-size: 0.75rem; color: #94a3b8; margin-top: 2px; }
+
+.track-actions { display: flex; align-items: center; gap: 10px; }
+.btn-fav-row {
+  background: transparent; border: none; font-size: 1rem;
+  cursor: pointer; padding: 4px; border-radius: 4px;
+}
+.btn-fav-row:active { transform: scale(1.2); }
 .indicator { font-size: 0.85rem; color: #38bdf8; }
 .empty { text-align: center; color: #64748b; font-size: 0.9rem; margin: 16px 0; }
 </style>
