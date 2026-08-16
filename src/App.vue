@@ -12,7 +12,7 @@ const BACKEND_URL = import.meta.env.DEV
 
 const socket = io(BACKEND_URL);
 
-// Estados Sincronizados
+// Estados
 const isConnected = ref(false);
 const isSleepTimerModalOpen = ref(false);
 const isPlaylistModalOpen = ref(false);
@@ -28,7 +28,7 @@ const currentFilterMode = ref('all');
 const selectedArtist = ref(null);
 const selectedGenre = ref(null);
 const selectedPlaylistId = ref(null);
-const filterCategoryTab = ref('playlists');
+const filterCategoryTab = ref('artists');
 
 const currentTrack = ref({
   path: null,
@@ -41,18 +41,17 @@ const currentTrack = ref({
 
 const isPlaying = ref(false);
 const isShuffle = ref(false);
+const repeatMode = ref('all'); // 'off' | 'all' | 'one'
 const volume = ref(10);
 const searchQuery = ref('');
 const imageError = ref(false);
 
-// Extractor de Color Dinámico
 const { currentPalette, extractColorsFromImage } = useColorExtractor();
 
 const themeStyleObject = computed(() => ({
   '--theme-accent': currentPalette.value.accent,
   '--theme-secondary': currentPalette.value.secondary,
-  '--theme-glow': currentPalette.value.glow,
-  '--theme-bg': currentPalette.value.bgGradient
+  '--theme-glow': currentPalette.value.glow
 }));
 
 // Ticker de Tiempo
@@ -68,7 +67,7 @@ const coverUrl = computed(() => {
 
 const handleImageError = () => { imageError.value = true; };
 
-// Acciones de Reproducción
+// Acciones de Control
 const playTrack = (track) => {
   imageError.value = false;
   socket.emit('play_track', track.path);
@@ -78,8 +77,8 @@ const togglePlay = () => socket.emit('toggle_play');
 const nextTrack = () => { imageError.value = false; socket.emit('next'); };
 const prevTrack = () => { imageError.value = false; socket.emit('prev'); };
 const toggleShuffle = () => socket.emit('toggle_shuffle');
+const toggleRepeat = () => socket.emit('toggle_repeat');
 
-// Manejo de Filtros
 const setFilter = (mode, param = null) => {
   imageError.value = false;
   if (mode === 'artist') {
@@ -102,11 +101,9 @@ const changeVolume = () => {
   socket.emit('set_volume', volume.value);
 };
 
-// Acciones Sleep Timer
 const setSleepTimer = (minutes) => socket.emit('set_sleep_timer', minutes);
 const cancelSleepTimer = () => socket.emit('cancel_sleep_timer');
 
-// Acciones Playlists
 const openCreatePlaylistModal = () => {
   playlistModalMode.value = 'create';
   selectedTrackForPlaylist.value = null;
@@ -120,14 +117,8 @@ const openAddToPlaylistModal = (track, event) => {
   isPlaylistModalOpen.value = true;
 };
 
-const handleCreatePlaylist = (name) => {
-  socket.emit('create_playlist', name);
-};
-
-const handleAddToPlaylist = ({ playlistId, trackPath }) => {
-  socket.emit('add_to_playlist', { playlistId, trackPath });
-};
-
+const handleCreatePlaylist = (name) => socket.emit('create_playlist', name);
+const handleAddToPlaylist = ({ playlistId, trackPath }) => socket.emit('add_to_playlist', { playlistId, trackPath });
 const handleDeletePlaylist = (playlistId, event) => {
   if (event) event.stopPropagation();
   socket.emit('delete_playlist', playlistId);
@@ -155,50 +146,43 @@ const progressPercent = computed(() => {
 
 const isTrackFavorite = (path) => favorites.value.includes(path);
 
+// FILTRADO ESTRICTO ANTI-NÚMEROS
 const uniqueArtists = computed(() => {
-  const list = masterLibrary.value.map(t => t.artist).filter(Boolean);
-  return [...new Set(list)].sort();
+  const list = masterLibrary.value
+    .map(t => t.artist)
+    .filter(a => a && a !== 'Varios' && !/^\d+$/.test(a.trim()));
+  return [...new Set(list)].sort((a, b) => a.localeCompare(b));
 });
 
 const uniqueGenres = computed(() => {
-  const list = masterLibrary.value.map(t => t.genre).filter(g => g && g !== 'Varios');
-  return [...new Set(list)].sort();
+  const list = masterLibrary.value
+    .map(t => t.genre)
+    .filter(g => g && g !== 'Varios' && !/^\d+$/.test(g.trim()));
+  return [...new Set(list)].sort((a, b) => a.localeCompare(b));
 });
 
-// =========================================================================
-// MEJORA UX: COLA CON LA CANCIÓN ACTIVA SIEMPRE EN LA POSICIÓN 0
-// =========================================================================
+// Cola visual priorizada con la pista activa en el índice 0
 const displayedQueue = computed(() => {
   let list = queue.value;
 
-  // 1. Filtrado por término de búsqueda si existe
   if (searchQuery.value.trim()) {
     const q = searchQuery.value.toLowerCase();
     list = list.filter(track =>
       track.title.toLowerCase().includes(q) ||
       track.artist.toLowerCase().includes(q) ||
+      (track.album && track.album.toLowerCase().includes(q)) ||
       (track.genre && track.genre.toLowerCase().includes(q))
     );
   }
 
-  // 2. Si no hay canción en reproducción o la lista tiene 1 elemento, retornar tal cual
-  if (!currentTrack.value.path || list.length <= 1) {
-    return list;
-  }
+  if (!currentTrack.value.path || list.length <= 1) return list;
 
-  // 3. Buscar si la canción activa está presente en la lista actual
   const activeIndex = list.findIndex(t => t.path === currentTrack.value.path);
+  if (activeIndex === -1) return list;
 
-  if (activeIndex === -1) {
-    // Si la búsqueda la filtró, mostramos los resultados del filtro sin alterar
-    return list;
-  }
-
-  // 4. Extraer la canción activa y posicionarla al inicio (Índice 0)
   const activeItem = list[activeIndex];
-  const otherItems = list.filter((_, idx) => idx !== activeIndex);
-
-  return [activeItem, ...otherItems];
+  const others = list.filter((_, idx) => idx !== activeIndex);
+  return [activeItem, ...others];
 });
 
 watch(coverUrl, (newUrl) => {
@@ -229,6 +213,7 @@ onMounted(() => {
   socket.on('state_changed', (state) => {
     isPlaying.value = state.isPlaying;
     isShuffle.value = state.isShuffle;
+    if (state.repeatMode !== undefined) repeatMode.value = state.repeatMode;
     currentFilterMode.value = state.currentFilterMode;
     selectedArtist.value = state.selectedArtist;
     selectedGenre.value = state.selectedGenre;
@@ -262,12 +247,7 @@ onUnmounted(() => {
     <!-- Navbar Header -->
     <header class="navbar">
       <div class="brand">
-        <div class="brand-glow"></div>
-        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-          <path d="M9 18V5l12-2v13"></path>
-          <circle cx="6" cy="18" r="3"></circle>
-          <circle cx="18" cy="16" r="3"></circle>
-        </svg>
+        <span class="brand-monogram">HI-FI</span>
         <h2>SOUND<span class="brand-accent">WAVE</span></h2>
       </div>
 
@@ -276,7 +256,7 @@ onUnmounted(() => {
           class="btn-sleep-timer" 
           :class="{ active: sleepTimer.active }"
           @click="isSleepTimerModalOpen = true"
-          title="Temporizador de apagado"
+          title="Sleep Timer"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
@@ -286,7 +266,7 @@ onUnmounted(() => {
 
         <div class="status-pill" :class="{ connected: isConnected }">
           <span class="status-indicator"></span>
-          <span class="status-text">{{ isConnected ? 'REMOTE' : 'OFF' }}</span>
+          <span class="status-text">{{ isConnected ? 'DAP LINK' : 'OFFLINE' }}</span>
         </div>
       </div>
     </header>
@@ -295,10 +275,17 @@ onUnmounted(() => {
     <div class="category-toggle">
       <button 
         class="toggle-tab" 
+        :class="{ active: filterCategoryTab === 'artists' }" 
+        @click="filterCategoryTab = 'artists'"
+      >
+        ARTISTAS ({{ uniqueArtists.length }})
+      </button>
+      <button 
+        class="toggle-tab" 
         :class="{ active: filterCategoryTab === 'playlists' }" 
         @click="filterCategoryTab = 'playlists'"
       >
-        PLAYLISTS
+        PLAYLISTS ({{ playlists.length }})
       </button>
       <button 
         class="toggle-tab" 
@@ -306,13 +293,6 @@ onUnmounted(() => {
         @click="filterCategoryTab = 'genres'"
       >
         GÉNEROS
-      </button>
-      <button 
-        class="toggle-tab" 
-        :class="{ active: filterCategoryTab === 'artists' }" 
-        @click="filterCategoryTab = 'artists'"
-      >
-        ARTISTAS
       </button>
     </div>
 
@@ -339,40 +319,8 @@ onUnmounted(() => {
         <small>{{ favorites.length }}</small>
       </button>
 
-      <!-- Pestaña PLAYLISTS -->
-      <template v-if="filterCategoryTab === 'playlists'">
-        <button class="tab-btn btn-new-pl" @click="openCreatePlaylistModal">
-          <span>➕ Nueva</span>
-        </button>
-
-        <button 
-          v-for="pl in playlists" 
-          :key="pl.id"
-          class="tab-btn tab-pl-item"
-          :class="{ active: currentFilterMode === 'playlist' && selectedPlaylistId === pl.id }"
-          @click="setFilter('playlist', pl.id)"
-        >
-          <span>{{ pl.name }}</span>
-          <small>{{ pl.tracks.length }}</small>
-          <span class="btn-del-pl" @click="handleDeletePlaylist(pl.id, $event)" title="Eliminar lista">✕</span>
-        </button>
-      </template>
-
-      <!-- Pestaña GÉNEROS -->
-      <template v-else-if="filterCategoryTab === 'genres'">
-        <button 
-          v-for="genre in uniqueGenres" 
-          :key="genre"
-          class="tab-btn"
-          :class="{ active: currentFilterMode === 'genre' && selectedGenre === genre }"
-          @click="setFilter('genre', genre)"
-        >
-          <span>{{ genre }}</span>
-        </button>
-      </template>
-
-      <!-- Pestaña ARTISTAS -->
-      <template v-else>
+      <!-- ARTISTAS -->
+      <template v-if="filterCategoryTab === 'artists'">
         <button 
           v-for="artist in uniqueArtists" 
           :key="artist"
@@ -383,130 +331,175 @@ onUnmounted(() => {
           <span>{{ artist }}</span>
         </button>
       </template>
+
+      <!-- PLAYLISTS -->
+      <template v-else-if="filterCategoryTab === 'playlists'">
+        <button class="tab-btn btn-new-pl" @click="openCreatePlaylistModal">
+          <span>➕ Nueva</span>
+        </button>
+        <button 
+          v-for="pl in playlists" 
+          :key="pl.id"
+          class="tab-btn tab-pl-item"
+          :class="{ active: currentFilterMode === 'playlist' && selectedPlaylistId === pl.id }"
+          @click="setFilter('playlist', pl.id)"
+        >
+          <span>{{ pl.name }}</span>
+          <small>{{ pl.tracks.length }}</small>
+          <span class="btn-del-pl" @click="handleDeletePlaylist(pl.id, $event)">✕</span>
+        </button>
+      </template>
+
+      <!-- GÉNEROS -->
+      <template v-else>
+        <button 
+          v-for="genre in uniqueGenres" 
+          :key="genre"
+          class="tab-btn"
+          :class="{ active: currentFilterMode === 'genre' && selectedGenre === genre }"
+          @click="setFilter('genre', genre)"
+        >
+          <span>{{ genre }}</span>
+        </button>
+      </template>
     </nav>
 
-    <!-- Reproductor Principal -->
+    <!-- REPRODUCTOR PRINCIPAL CON PORTADA DIFUMINADA -->
     <section class="player-card">
-      <div class="cover-wrapper">
-        <div class="ambient-glow" :style="{ opacity: isPlaying ? '0.7' : '0.2' }"></div>
+      <div class="card-blur-backdrop" v-if="coverUrl">
+        <img :src="coverUrl" alt="" class="card-blur-img" />
+        <div class="card-blur-vignette"></div>
+      </div>
 
-        <img 
-          v-if="coverUrl" 
-          :src="coverUrl" 
-          alt="Cover" 
-          class="cover-art"
-          @error="handleImageError"
-        />
-        <div v-else class="cover-placeholder">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <rect x="4" y="4" width="16" height="16" rx="3" stroke="currentColor"/>
-            <circle cx="12" cy="12" r="4" stroke="currentColor"/>
-            <path d="M12 8v4l3 3"/>
-          </svg>
+      <div class="deck-inner-content">
+        <div class="deck-top-row">
+          <span class="deck-badge">{{ currentTrack.genre || 'HI-RES AUDIO' }}</span>
+          <button 
+            v-if="currentTrack.path"
+            class="fav-deck-btn"
+            :class="{ is_active: isTrackFavorite(currentTrack.path) }"
+            @click="toggleFavorite(currentTrack.path, $event)"
+          >
+            <svg viewBox="0 0 24 24" :fill="isTrackFavorite(currentTrack.path) ? '#ef4444' : 'none'" stroke="#ef4444" stroke-width="2">
+              <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+            </svg>
+          </button>
         </div>
 
-        <button 
-          v-if="currentTrack.path"
-          class="fav-toggle-btn"
-          :class="{ is_active: isTrackFavorite(currentTrack.path) }"
-          @click="toggleFavorite(currentTrack.path, $event)"
-        >
-          <svg viewBox="0 0 24 24" :fill="isTrackFavorite(currentTrack.path) ? '#ef4444' : 'none'" stroke="#ef4444" stroke-width="2">
-            <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
-          </svg>
-        </button>
-      </div>
-
-      <!-- Metadatos -->
-      <div class="meta-container">
-        <h3 class="meta-title">{{ currentTrack.title || 'Pista no seleccionada' }}</h3>
-        <p class="meta-artist">{{ currentTrack.artist || 'Toca una canción de la cola' }}</p>
-        <span v-if="currentTrack.album" class="meta-album">{{ currentTrack.album }}</span>
-      </div>
-
-      <!-- Barra de Progreso -->
-      <div class="progress-container">
-        <div class="progress-rail">
-          <div class="progress-bar" :style="{ width: `${progressPercent}%` }">
-            <div class="progress-glow-dot"></div>
+        <div class="cover-container">
+          <img 
+            v-if="coverUrl" 
+            :src="coverUrl" 
+            alt="Cover" 
+            class="cover-art"
+            @error="handleImageError"
+          />
+          <div v-else class="cover-fallback">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="10"></circle>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
           </div>
         </div>
-        <div class="timestamp-row">
-          <span>{{ formatTime(currentTime) }}</span>
-          <span>{{ formatTime(currentTrack.duration) }}</span>
+
+        <!-- Metadatos ID3 -->
+        <div class="track-meta-center">
+          <h3 class="track-title-main">{{ currentTrack.title || 'Pista no seleccionada' }}</h3>
+          <p class="track-artist-main">{{ currentTrack.artist || 'Elige una canción' }}</p>
+          <span v-if="currentTrack.album" class="track-album-main">{{ currentTrack.album }}</span>
         </div>
-      </div>
 
-      <!-- Controles -->
-      <div class="control-panel">
-        <button 
-          class="btn-action btn-shuffle" 
-          :class="{ active: isShuffle }" 
-          @click="toggleShuffle"
-          title="Aleatorio"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>
-          </svg>
-        </button>
+        <!-- Barra de Progreso -->
+        <div class="progress-box">
+          <div class="progress-track">
+            <div class="progress-fill" :style="{ width: `${progressPercent}%` }">
+              <div class="progress-thumb"></div>
+            </div>
+          </div>
+          <div class="progress-times">
+            <span>{{ formatTime(currentTime) }}</span>
+            <span>{{ formatTime(currentTrack.duration) }}</span>
+          </div>
+        </div>
 
-        <button class="btn-action btn-prev" @click="prevTrack" title="Anterior">
-          <svg viewBox="0 0 24 24" fill="currentColor">
-            <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
-          </svg>
-        </button>
+        <!-- Botonera de Control Completa -->
+        <div class="controls-deck">
+          <!-- Aleatorio -->
+          <button 
+            class="btn-deck-action" 
+            :class="{ active: isShuffle }" 
+            @click="toggleShuffle"
+            title="Modo Aleatorio"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>
+            </svg>
+          </button>
 
-        <button class="btn-play-hero" @click="togglePlay" title="Play/Pausa">
-          <svg v-if="isPlaying" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-          </svg>
-          <svg v-else viewBox="0 0 24 24" fill="currentColor">
-            <path d="M8 5v14l11-7z"/>
-          </svg>
-        </button>
+          <button class="btn-deck-skip" @click="prevTrack" title="Anterior">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+            </svg>
+          </button>
 
-        <button class="btn-action btn-next" @click="nextTrack" title="Siguiente">
-          <svg viewBox="0 0 24 24" fill="currentColor">
-            <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-          </svg>
-        </button>
+          <button class="btn-deck-play" @click="togglePlay" title="Play/Pausa">
+            <svg v-if="isPlaying" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+            </svg>
+            <svg v-else viewBox="0 0 24 24" fill="currentColor">
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+          </button>
 
-        <div class="btn-placeholder"></div>
-      </div>
+          <button class="btn-deck-skip" @click="nextTrack" title="Siguiente">
+            <svg viewBox="0 0 24 24" fill="currentColor">
+              <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+            </svg>
+          </button>
 
-      <!-- Slider de Volumen -->
-      <div class="volume-dock">
-        <svg class="vol-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M11 5L6 9H2v6h4l5 4V5z"/>
-        </svg>
-        <input 
-          type="range" 
-          min="0" 
-          max="15" 
-          v-model.number="volume" 
-          @input="changeVolume"
-          class="vol-slider"
-        />
-        <svg class="vol-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M11 5L6 9H2v6h4l5 4V5zM19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
-        </svg>
-        <span class="vol-level">{{ volume }}</span>
+          <!-- BOTÓN REPETIR (TRI-ESTADO) -->
+          <button 
+            class="btn-deck-action btn-repeat" 
+            :class="{ active: repeatMode !== 'off' }" 
+            @click="toggleRepeat"
+            :title="`Modo Repetir: ${repeatMode}`"
+          >
+            <div class="repeat-icon-box">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="17 1 21 5 17 9"></polyline>
+                <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                <polyline points="7 23 3 19 7 15"></polyline>
+                <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+              </svg>
+              <span v-if="repeatMode === 'one'" class="repeat-badge-one">1</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- Hardware Volume -->
+        <div class="hardware-volume">
+          <span class="vol-label">VOL</span>
+          <input 
+            type="range" 
+            min="0" 
+            max="15" 
+            v-model.number="volume" 
+            @input="changeVolume"
+            class="hw-slider"
+          />
+          <span class="hw-vol-num">{{ volume }}</span>
+        </div>
       </div>
     </section>
 
     <!-- Cola Activa Priorizada -->
     <section class="queue-card">
       <div class="queue-header">
-        <div class="queue-title-box">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>
-          </svg>
-          <h4>COLA ACTIVA</h4>
-        </div>
+        <h4>COLA DE REPRODUCCIÓN</h4>
         <span class="queue-count">{{ displayedQueue.length }} pistas</span>
       </div>
 
-      <div class="search-box">
+      <div class="search-bar">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"></circle>
           <path d="M21 21l-4.35-4.35"></path>
@@ -514,7 +507,7 @@ onUnmounted(() => {
         <input 
           type="text" 
           v-model="searchQuery" 
-          placeholder="Buscar pista, artista o lista..." 
+          placeholder="Buscar por artista, título o álbum..." 
         />
       </div>
 
@@ -523,53 +516,45 @@ onUnmounted(() => {
           v-for="(track, index) in displayedQueue" 
           :key="track.id" 
           @click="playTrack(track)"
-          :class="{ 'is-playing': currentTrack.path === track.path, 'is-top-active': index === 0 && currentTrack.path === track.path }"
+          :class="{ 
+            'is-active': currentTrack.path === track.path, 
+            'is-top-now': index === 0 && currentTrack.path === track.path 
+          }"
         >
-          <div class="track-meta">
-            <div class="title-badge-row">
-              <span class="item-title">{{ track.title }}</span>
-              <span v-if="index === 0 && currentTrack.path === track.path" class="now-playing-badge">
-                EN REPRODUCCIÓN
+          <div class="track-info">
+            <div class="title-row">
+              <span class="track-name">{{ track.title }}</span>
+              <span v-if="index === 0 && currentTrack.path === track.path" class="now-badge">
+                REPRODUCIENDO
               </span>
             </div>
-            <div class="item-sub">
-              <span class="item-artist">{{ track.artist }}</span>
-              <span class="item-genre-tag" v-if="track.genre && track.genre !== 'Varios'">• {{ track.genre }}</span>
+            <div class="sub-row">
+              <span class="track-artist-text">{{ track.artist }}</span>
+              <span v-if="track.album && track.album !== 'MicroSD Audio'" class="track-album-text">• {{ track.album }}</span>
             </div>
           </div>
 
-          <div class="item-controls">
-            <!-- Botón Agregar a Playlist -->
-            <button 
-              class="item-btn-icon" 
-              @click="openAddToPlaylistModal(track, $event)"
-              title="Agregar a playlist"
-            >
+          <div class="item-actions">
+            <button class="btn-add-pl" @click="openAddToPlaylistModal(track, $event)" title="Agregar a Playlist">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="12" y1="5" x2="12" y2="19"></line>
                 <line x1="5" y1="12" x2="19" y2="12"></line>
               </svg>
             </button>
 
-            <!-- Botón Favorito -->
-            <button 
-              class="item-fav-btn" 
-              @click="toggleFavorite(track.path, $event)"
-            >
+            <button class="btn-fav-item" @click="toggleFavorite(track.path, $event)">
               <svg viewBox="0 0 24 24" :fill="isTrackFavorite(track.path) ? '#ef4444' : 'none'" stroke="#ef4444" stroke-width="2">
                 <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
               </svg>
             </button>
 
-            <div class="playing-bars" v-if="currentTrack.path === track.path">
+            <div class="bars-anim" v-if="currentTrack.path === track.path">
               <span></span><span></span><span></span>
             </div>
           </div>
         </li>
       </ul>
-      <div v-else class="empty-state">
-        <p>No se encontraron canciones.</p>
-      </div>
+      <div v-else class="empty-msg">No se encontraron pistas.</div>
     </section>
 
     <!-- Modales -->
@@ -599,14 +584,13 @@ onUnmounted(() => {
   max-width: 390px;
   margin: 0 auto;
   min-height: 100vh;
-  background: var(--theme-bg, radial-gradient(circle at top, #0f172a 0%, #060913 100%));
-  color: #f8fafc;
+  background-color: #030712;
+  color: #f3f4f6;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
   display: flex;
   flex-direction: column;
-  padding: max(16px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)) 16px;
+  padding: max(14px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)) 16px;
   box-sizing: border-box;
-  transition: background 0.8s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .navbar {
@@ -619,34 +603,24 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  position: relative;
 }
-.brand-glow {
-  position: absolute;
-  width: 24px;
-  height: 24px;
-  background: var(--theme-accent, #38bdf8);
-  filter: blur(14px);
-  opacity: 0.6;
-  transition: background 0.6s ease;
-}
-.brand-icon {
-  width: 22px;
-  height: 22px;
+.brand-monogram {
+  background: #111827;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  font-size: 0.6rem;
+  font-weight: 900;
+  padding: 2px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.5px;
   color: var(--theme-accent, #38bdf8);
-  transition: color 0.6s ease;
 }
 .navbar h2 {
   margin: 0;
-  font-size: 1.15rem;
+  font-size: 1.1rem;
   font-weight: 900;
-  letter-spacing: 1px;
-  color: #f8fafc;
+  letter-spacing: 0.5px;
 }
-.brand-accent {
-  color: var(--theme-accent, #38bdf8);
-  transition: color 0.6s ease;
-}
+.brand-accent { color: var(--theme-accent, #38bdf8); }
 
 .header-actions {
   display: flex;
@@ -658,23 +632,20 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: rgba(15, 23, 42, 0.8);
+  background: rgba(17, 24, 39, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  color: #94a3b8;
-  padding: 5px 10px;
-  border-radius: 20px;
+  color: #9ca3af;
+  padding: 4px 8px;
+  border-radius: 16px;
   cursor: pointer;
-  transition: all 0.2s ease;
 }
-.btn-sleep-timer svg { width: 14px; height: 14px; }
+.btn-sleep-timer svg { width: 13px; height: 13px; }
 .btn-sleep-timer.active {
-  background: rgba(56, 189, 248, 0.15);
   border-color: var(--theme-accent, #38bdf8);
   color: var(--theme-accent, #38bdf8);
-  box-shadow: 0 0 10px var(--theme-glow, rgba(56, 189, 248, 0.3));
 }
 .timer-mini-text {
-  font-size: 0.7rem;
+  font-size: 0.65rem;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
@@ -683,265 +654,266 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 5px 10px;
-  border-radius: 20px;
-}
-.status-pill.connected {
-  border-color: var(--theme-accent, #38bdf8);
-  box-shadow: 0 0 10px var(--theme-glow, rgba(56, 189, 248, 0.15));
+  background: rgba(17, 24, 39, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 4px 8px;
+  border-radius: 16px;
 }
 .status-indicator {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: #ef4444;
 }
 .status-pill.connected .status-indicator {
   background: var(--theme-accent, #38bdf8);
-  box-shadow: 0 0 6px var(--theme-accent, #38bdf8);
 }
 .status-text {
   font-size: 0.65rem;
   font-weight: 800;
-  letter-spacing: 0.5px;
-  color: #94a3b8;
+  color: #9ca3af;
 }
 
 .category-toggle {
   display: flex;
-  gap: 6px;
-  background: rgba(15, 23, 42, 0.7);
-  padding: 4px;
-  border-radius: 12px;
+  background: rgba(17, 24, 39, 0.7);
+  padding: 3px;
+  border-radius: 10px;
   margin-bottom: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 .toggle-tab {
   flex: 1;
   background: transparent;
   border: none;
-  color: #94a3b8;
+  color: #9ca3af;
   padding: 6px 0;
-  border-radius: 8px;
-  font-size: 0.7rem;
+  border-radius: 7px;
+  font-size: 0.68rem;
   font-weight: 800;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 .toggle-tab.active {
-  background: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.12);
   color: var(--theme-accent, #38bdf8);
 }
 
 .filter-strip {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   overflow-x: auto;
   padding-bottom: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   scrollbar-width: none;
 }
 .filter-strip::-webkit-scrollbar { display: none; }
 .tab-btn {
   display: flex;
   align-items: center;
-  gap: 6px;
-  background: rgba(15, 23, 42, 0.7);
+  gap: 5px;
+  background: rgba(17, 24, 39, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  color: #94a3b8;
-  padding: 6px 12px;
-  border-radius: 12px;
-  font-size: 0.75rem;
+  color: #9ca3af;
+  padding: 5px 10px;
+  border-radius: 10px;
+  font-size: 0.72rem;
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
 }
 .tab-btn small {
   background: rgba(255, 255, 255, 0.08);
-  padding: 2px 6px;
-  border-radius: 6px;
-  font-size: 0.65rem;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 0.62rem;
 }
 .tab-btn.active {
   background: var(--theme-accent, #38bdf8);
-  color: #060913;
+  color: #030712;
   border-color: var(--theme-accent, #38bdf8);
   font-weight: 800;
-  box-shadow: 0 0 12px var(--theme-glow, rgba(56, 189, 248, 0.5));
 }
 .tab-fav.active {
   background: #dc2626;
   border-color: #ef4444;
   color: #fff;
-  box-shadow: 0 0 12px rgba(239, 68, 68, 0.5);
 }
-.tab-fav-icon { width: 12px; height: 12px; }
+.tab-fav-icon { width: 11px; height: 11px; }
 
-.btn-new-pl {
-  border-style: dashed;
-  border-color: var(--theme-accent, #38bdf8);
-  color: var(--theme-accent, #38bdf8);
-}
-.tab-pl-item {
-  position: relative;
-  padding-right: 28px;
-}
-.btn-del-pl {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 0.65rem;
-  color: #ef4444;
-  padding: 2px 4px;
-  border-radius: 4px;
-}
+.btn-new-pl { border-style: dashed; border-color: var(--theme-accent, #38bdf8); color: var(--theme-accent, #38bdf8); }
+.tab-pl-item { position: relative; padding-right: 24px; }
+.btn-del-pl { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); font-size: 0.6rem; color: #ef4444; }
 
+/* REPRODUCTOR DECK */
 .player-card {
-  background: rgba(15, 23, 42, 0.65);
-  backdrop-filter: blur(25px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  position: relative;
+  overflow: hidden;
+  background: #0b0f19;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 24px;
-  padding: 16px;
-  margin-bottom: 14px;
-  box-shadow: 0 15px 35px rgba(0, 0, 0, 0.7);
+  margin-bottom: 12px;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
 }
 
-.cover-wrapper {
-  position: relative;
-  width: 170px;
-  height: 170px;
-  margin: 0 auto 12px auto;
-}
-.ambient-glow {
+.card-blur-backdrop {
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle, var(--theme-accent, #38bdf8) 0%, transparent 80%);
-  filter: blur(24px);
-  border-radius: 20px;
-  transition: background 0.8s ease, opacity 0.3s ease;
+  z-index: 1;
+  overflow: hidden;
+  pointer-events: none;
 }
-.cover-art {
-  position: relative;
+.card-blur-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  border-radius: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  filter: blur(35px) brightness(0.38) saturate(180%);
+  transform: scale(1.35);
+  transition: all 0.6s ease;
 }
-.cover-placeholder {
+.card-blur-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at center, rgba(11, 15, 25, 0.3) 0%, rgba(3, 7, 18, 0.85) 100%);
+}
+
+.deck-inner-content {
   position: relative;
+  z-index: 2;
+  padding: 14px 16px;
+}
+
+.deck-top-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.deck-badge {
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.6px;
+  color: #d1d5db;
+  text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.fav-deck-btn {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.fav-deck-btn svg { width: 16px; height: 16px; }
+
+.cover-container {
+  width: 165px;
+  height: 165px;
+  margin: 0 auto 12px auto;
+}
+.cover-art {
   width: 100%;
   height: 100%;
-  background: #090e1a;
-  border-radius: 20px;
+  object-fit: cover;
+  border-radius: 16px;
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+.cover-fallback {
+  width: 100%;
+  height: 100%;
+  background: #0b0f19;
+  border-radius: 16px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: 1px dashed rgba(255, 255, 255, 0.15);
 }
-.cover-placeholder svg {
-  width: 50px;
-  height: 50px;
-  color: var(--theme-accent, #38bdf8);
-}
+.cover-fallback svg { width: 50px; height: 50px; color: #4b5563; }
 
-.fav-toggle-btn {
-  position: absolute;
-  right: -6px;
-  bottom: -6px;
-  background: #090e1a;
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-  transition: transform 0.15s ease;
-}
-.fav-toggle-btn:active { transform: scale(1.15); }
-.fav-toggle-btn svg { width: 18px; height: 18px; }
-
-.meta-container {
+.track-meta-center {
   text-align: center;
   margin-bottom: 12px;
 }
-.meta-title {
-  margin: 0 0 3px 0;
-  font-size: 1.1rem;
+.track-title-main {
+  margin: 0 0 2px 0;
+  font-size: 1.05rem;
   font-weight: 800;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.6);
 }
-.meta-artist {
+.track-artist-main {
   margin: 0 0 2px 0;
   font-size: 0.85rem;
   color: var(--theme-accent, #38bdf8);
-  font-weight: 600;
-  transition: color 0.6s ease;
+  font-weight: 700;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
 }
-.meta-album {
-  font-size: 0.72rem;
-  color: #64748b;
+.track-album-main {
+  font-size: 0.7rem;
+  color: #9ca3af;
 }
 
-.progress-container { margin-bottom: 14px; }
-.progress-rail {
+.progress-box { margin-bottom: 12px; }
+.progress-track {
   width: 100%;
   height: 4px;
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.15);
   border-radius: 2px;
   position: relative;
 }
-.progress-bar {
+.progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--theme-secondary, #2563eb), var(--theme-accent, #38bdf8));
+  background: var(--theme-accent, #38bdf8);
   border-radius: 2px;
   position: relative;
-  transition: width 0.25s linear, background 0.6s ease;
+  transition: width 0.25s linear;
 }
-.progress-glow-dot {
+.progress-thumb {
   position: absolute;
-  right: -4px;
+  right: -3px;
   top: -3px;
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: var(--theme-accent, #38bdf8);
-  box-shadow: 0 0 8px var(--theme-accent, #38bdf8);
-  transition: background 0.6s ease, box-shadow 0.6s ease;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(0,0,0,0.5);
 }
-.timestamp-row {
+.progress-times {
   display: flex;
   justify-content: space-between;
-  font-size: 0.7rem;
-  color: #64748b;
-  margin-top: 6px;
+  font-size: 0.68rem;
+  color: #d1d5db;
+  margin-top: 5px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
 
-.control-panel {
+/* Controles */
+.controls-deck {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
-  padding: 0 8px;
+  padding: 0 4px;
 }
-.btn-action {
-  background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+.btn-deck-action {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
   color: #cbd5e1;
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -949,69 +921,84 @@ onUnmounted(() => {
   cursor: pointer;
   transition: all 0.15s ease;
 }
-.btn-action:active { transform: scale(0.92); }
-.btn-action svg { width: 18px; height: 18px; }
-.btn-shuffle.active {
+.btn-deck-action svg { width: 16px; height: 16px; }
+.btn-deck-action.active {
   background: var(--theme-accent, #38bdf8);
-  border-color: var(--theme-accent, #38bdf8);
-  color: #060913;
-  box-shadow: 0 0 12px var(--theme-glow, rgba(56, 189, 248, 0.4));
+  color: #030712;
 }
 
-.btn-play-hero {
-  width: 58px;
-  height: 58px;
+.repeat-icon-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.repeat-badge-one {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  font-size: 0.6rem;
+  font-weight: 900;
+  background: #030712;
+  color: var(--theme-accent, #38bdf8);
+  padding: 0 3px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.btn-deck-action.active .repeat-badge-one {
+  background: #ffffff;
+  color: #030712;
+}
+
+.btn-deck-skip {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f3f4f6;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
-  border: none;
-  background: linear-gradient(135deg, var(--theme-accent, #38bdf8) 0%, var(--theme-secondary, #2563eb) 100%);
-  color: #060913;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 0 20px var(--theme-glow, rgba(56, 189, 248, 0.4));
-  transition: transform 0.1s ease, background 0.6s ease, box-shadow 0.6s ease;
 }
-.btn-play-hero:active { transform: scale(0.94); }
-.btn-play-hero svg { width: 26px; height: 26px; fill: #060913; }
-.btn-placeholder { width: 44px; }
+.btn-deck-skip svg { width: 18px; height: 18px; }
 
-.volume-dock {
+.btn-deck-play {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background: var(--theme-accent, #38bdf8);
+  color: #030712;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+}
+.btn-deck-play svg { width: 24px; height: 24px; }
+
+.hardware-volume {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: rgba(9, 14, 26, 0.6);
-  padding: 8px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
-.vol-icon {
-  width: 16px;
-  height: 16px;
-  color: #64748b;
-}
-.vol-slider {
-  flex: 1;
-  height: 4px;
-  accent-color: var(--theme-accent, #38bdf8);
-  cursor: pointer;
-}
-.vol-level {
-  font-size: 0.75rem;
-  font-weight: 800;
-  color: var(--theme-accent, #38bdf8);
-  width: 14px;
-  text-align: right;
-  transition: color 0.6s ease;
-}
+.vol-label { font-size: 0.65rem; font-weight: 900; color: #9ca3af; }
+.hw-slider { flex: 1; height: 3px; accent-color: var(--theme-accent, #38bdf8); cursor: pointer; }
+.hw-vol-num { font-size: 0.7rem; font-weight: 800; color: var(--theme-accent, #38bdf8); width: 14px; text-align: right; }
 
+/* Cola Card */
 .queue-card {
   flex: 1;
-  background: rgba(15, 23, 42, 0.65);
-  backdrop-filter: blur(25px);
+  background: rgba(17, 24, 39, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 24px;
-  padding: 14px;
+  border-radius: 22px;
+  padding: 12px 14px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1020,54 +1007,23 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
-.queue-title-box {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.queue-title-box svg {
-  width: 16px;
-  height: 16px;
-  color: var(--theme-accent, #38bdf8);
-  transition: color 0.6s ease;
-}
-.queue-header h4 {
-  margin: 0;
-  font-size: 0.8rem;
-  font-weight: 800;
-  letter-spacing: 0.5px;
-}
-.queue-count {
-  font-size: 0.7rem;
-  color: #64748b;
-  font-weight: 600;
-}
+.queue-header h4 { margin: 0; font-size: 0.75rem; font-weight: 800; letter-spacing: 0.4px; }
+.queue-count { font-size: 0.65rem; color: #6b7280; font-weight: 600; }
 
-.search-box {
+.search-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(9, 14, 26, 0.7);
+  background: rgba(11, 15, 25, 0.8);
   border: 1px solid rgba(255, 255, 255, 0.08);
   padding: 6px 10px;
-  border-radius: 10px;
-  margin-bottom: 10px;
+  border-radius: 8px;
+  margin-bottom: 8px;
 }
-.search-box svg {
-  width: 14px;
-  height: 14px;
-  color: #64748b;
-}
-.search-box input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: #f8fafc;
-  font-size: 0.8rem;
-  outline: none;
-}
+.search-bar svg { width: 13px; height: 13px; color: #6b7280; }
+.search-bar input { flex: 1; background: transparent; border: none; color: #f3f4f6; font-size: 0.75rem; outline: none; }
 
 .track-queue {
   list-style: none;
@@ -1076,136 +1032,111 @@ onUnmounted(() => {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   max-height: 25vh;
 }
 .track-queue li {
-  background: rgba(9, 14, 26, 0.5);
+  background: rgba(11, 15, 25, 0.5);
   padding: 8px 10px;
-  border-radius: 10px;
+  border-radius: 8px;
   display: flex;
   justify-content: space-between;
   align-items: center;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: all 0.2s ease;
+  transition: all 0.15s ease;
 }
-.track-queue li:active { background: rgba(30, 41, 59, 0.7); }
-.track-queue li.is-playing {
+.track-queue li.is-active {
   border-color: var(--theme-accent, #38bdf8);
   background: rgba(255, 255, 255, 0.05);
 }
-.track-queue li.is-top-active {
-  background: rgba(56, 189, 248, 0.1);
-  box-shadow: 0 0 12px var(--theme-glow, rgba(56, 189, 248, 0.2));
+.track-queue li.is-top-now {
+  background: rgba(56, 189, 248, 0.08);
 }
 
-.track-meta {
+.track-info {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-width: 0;
   padding-right: 8px;
 }
-
-.title-badge-row {
+.title-row {
   display: flex;
   align-items: center;
   gap: 6px;
 }
-
-.item-title {
-  font-size: 0.8rem;
+.track-name {
+  font-size: 0.78rem;
   font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.track-queue li.is-playing .item-title {
+.track-queue li.is-active .track-name {
   color: var(--theme-accent, #38bdf8);
-  transition: color 0.6s ease;
 }
-
-.now-playing-badge {
-  font-size: 0.58rem;
-  font-weight: 800;
-  color: #060913;
+.now-badge {
+  font-size: 0.55rem;
+  font-weight: 900;
+  color: #030712;
   background: var(--theme-accent, #38bdf8);
-  padding: 1px 5px;
-  border-radius: 4px;
-  letter-spacing: 0.4px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  letter-spacing: 0.3px;
   white-space: nowrap;
 }
 
-.item-sub {
+.sub-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 1px;
+}
+.track-artist-text { font-size: 0.68rem; color: #9ca3af; }
+.track-album-text { font-size: 0.65rem; color: #6b7280; }
+
+.item-actions {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 1px;
 }
-.item-artist {
-  font-size: 0.7rem;
-  color: #64748b;
-}
-.item-genre-tag {
-  font-size: 0.65rem;
-  color: var(--theme-accent, #38bdf8);
-  font-weight: 600;
-  transition: color 0.6s ease;
-}
-
-.item-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.item-btn-icon {
+.btn-add-pl {
   background: transparent;
   border: none;
-  color: #64748b;
+  color: #6b7280;
   cursor: pointer;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  padding: 2px;
 }
-.item-btn-icon:active { color: var(--theme-accent, #38bdf8); }
-.item-btn-icon svg { width: 15px; height: 15px; }
-
-.item-fav-btn {
+.btn-add-pl svg { width: 14px; height: 14px; }
+.btn-fav-item {
   background: transparent;
   border: none;
-  padding: 4px;
+  padding: 2px;
   cursor: pointer;
 }
-.item-fav-btn svg { width: 14px; height: 14px; }
+.btn-fav-item svg { width: 13px; height: 13px; }
 
-.playing-bars {
+.bars-anim {
   display: flex;
   align-items: flex-end;
   gap: 2px;
-  height: 12px;
+  height: 10px;
 }
-.playing-bars span {
+.bars-anim span {
   width: 2px;
   background: var(--theme-accent, #38bdf8);
   border-radius: 1px;
-  animation: bounce 0.8s infinite ease-in-out alternate;
-  transition: background 0.6s ease;
+  animation: jump 0.8s infinite ease-in-out alternate;
 }
-.playing-bars span:nth-child(1) { height: 40%; animation-delay: 0.1s; }
-.playing-bars span:nth-child(2) { height: 100%; animation-delay: 0.3s; }
-.playing-bars span:nth-child(3) { height: 60%; animation-delay: 0.2s; }
+.bars-anim span:nth-child(1) { height: 35%; animation-delay: 0.1s; }
+.bars-anim span:nth-child(2) { height: 100%; animation-delay: 0.3s; }
+.bars-anim span:nth-child(3) { height: 60%; animation-delay: 0.2s; }
 
-@keyframes bounce {
+@keyframes jump {
   0% { height: 20%; }
   100% { height: 100%; }
 }
 
-.empty-state {
-  text-align: center;
-  color: #64748b;
-  font-size: 0.8rem;
-  padding: 16px 0;
-}
+.empty-msg { text-align: center; color: #6b7280; font-size: 0.75rem; padding: 14px 0; }
 </style>
