@@ -22,21 +22,25 @@ watch(() => props.eqSettings, (newVal) => {
   localEq.value = JSON.parse(JSON.stringify(newVal));
 }, { deep: true });
 
+// Curvas Acústicas Calibradas (Sin saturación)
 const PRESETS = {
   bass_boost: {
-    name: '🔊 Bass Boost',
-    gains: [6.0, 6.0, 4.5, 2.0, 0.5, -2.0, -1.5, -1.0, -1.0, -1.0]
+    name: '🔊 Bass Boost Pro',
+    // Pegada en 63Hz y 125Hz, sub-graves controlados y brillo limpio
+    gains: [3.5, 5.0, 3.5, 1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0]
   },
   rock: {
     name: '🎸 Rock / Metal',
-    gains: [4.5, 3.5, 2.0, 0.0, -1.0, -0.5, 1.5, 3.0, 4.0, 4.5]
+    // Perfil en "V" balanceado: graves con cuerpo y guitarras/platillos definidos
+    gains: [3.0, 3.5, 2.0, 0.0, -1.0, 0.0, 1.0, 2.0, 3.0, 3.5]
   },
   vocal: {
-    name: '🎙️ Vocal / Pop',
-    gains: [-1.5, -1.0, 0.0, 1.5, 3.0, 3.5, 2.5, 1.5, 0.5, 0.0]
+    name: '🎙️ Vocal / Acústico',
+    // Corte de graves molestos y realce de presencia en medios/altos
+    gains: [-2.0, -1.0, 0.0, 1.0, 2.5, 3.0, 2.5, 1.5, 0.5, 0.0]
   },
   flat: {
-    name: '⚖️ Flat (0 dB)',
+    name: '⚖️ Flat (Puro)',
     gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
   }
 };
@@ -47,7 +51,7 @@ const applyPreset = (presetKey) => {
   localEq.value.preset = presetKey;
   localEq.value.enabled = true;
   localEq.value.bands.forEach((band, idx) => {
-    band.gain = p.gains[idx] || 0;
+    band.gain = p.gains[idx] ?? 0;
   });
   emit('update-eq', localEq.value);
 };
@@ -69,7 +73,6 @@ const toggleEqEnabled = () => {
     <div class="sheet-container">
       <div class="sheet-handle"></div>
 
-      <!-- Header del Ecualizador -->
       <div class="sheet-header">
         <div class="title-box">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -79,9 +82,6 @@ const toggleEqEnabled = () => {
             <line x1="12" y1="8" x2="12" y2="3"></line>
             <line x1="20" y1="21" x2="20" y2="16"></line>
             <line x1="20" y1="12" x2="20" y2="3"></line>
-            <line x1="1" y1="14" x2="7" y2="14"></line>
-            <line x1="9" y1="8" x2="15" y2="8"></line>
-            <line x1="17" y1="16" x2="23" y2="16"></line>
           </svg>
           <h3>Ecualizador DSP</h3>
         </div>
@@ -98,7 +98,6 @@ const toggleEqEnabled = () => {
         </div>
       </div>
 
-      <!-- Presets Rápidos -->
       <div class="presets-row">
         <button 
           v-for="(p, key) in PRESETS" 
@@ -111,7 +110,6 @@ const toggleEqEnabled = () => {
         </button>
       </div>
 
-      <!-- Parrilla de 10 Bandas Verticales -->
       <div class="eq-grid" :class="{ disabled: !localEq.enabled }">
         <div 
           v-for="(band, idx) in localEq.bands" 
@@ -125,8 +123,8 @@ const toggleEqEnabled = () => {
           <div class="slider-wrapper">
             <input 
               type="range" 
-              min="-10" 
-              max="10" 
+              min="-8" 
+              max="8" 
               step="0.5"
               :value="band.gain" 
               @input="handleSliderChange(idx, $event.target.value)"
@@ -156,13 +154,13 @@ const toggleEqEnabled = () => {
 
 .sheet-container {
   width: 100%;
-  max-width: 390px;
-  background: rgba(15, 23, 42, 0.95);
+  max-width: 440px;
+  background: rgba(15, 23, 42, 0.96);
   border-top: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 28px 28px 0 0;
   padding: 12px 14px 34px 14px;
   box-sizing: border-box;
-  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.85);
 }
 
 .sheet-handle {
@@ -210,7 +208,6 @@ const toggleEqEnabled = () => {
   font-size: 0.65rem;
   font-weight: 800;
   cursor: pointer;
-  letter-spacing: 0.5px;
 }
 .btn-toggle-bypass.active {
   background: var(--theme-accent, #38bdf8);
@@ -244,7 +241,7 @@ const toggleEqEnabled = () => {
   background: rgba(30, 41, 59, 0.7);
   border: 1px solid rgba(255, 255, 255, 0.08);
   color: #94a3b8;
-  padding: 5px 10px;
+  padding: 6px 12px;
   border-radius: 10px;
   font-size: 0.7rem;
   font-weight: 700;

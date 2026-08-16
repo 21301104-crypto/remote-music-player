@@ -21,6 +21,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('dist'));
 
+// Configuración de Rutas y Almacenamiento
 const MUSIC_DIR = '/storage/9C33-6BBD/Music';
 const DATA_DIR = path.resolve('data');
 const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
@@ -34,13 +35,14 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+// Helpers de Persistencia JSON
 const loadJSON = (file, fallback = []) => {
   try {
     if (fs.existsSync(file)) {
       return JSON.parse(fs.readFileSync(file, 'utf-8'));
     }
   } catch (err) {
-    console.error(`[Storage Error] ${file}:`, err.message);
+    console.error(`[Storage Error] Leyendo ${file}:`, err.message);
   }
   return fallback;
 };
@@ -57,14 +59,13 @@ let favoritesList = loadJSON(FAVORITES_FILE, []);
 let playlistsList = loadJSON(PLAYLISTS_FILE, []);
 
 // =========================================================================
-// CONFIGURACIÓN DE MULTER (WEB UPLOADER)
+// CONFIGURACIÓN DEL WEB UPLOADER (MULTER)
 // =========================================================================
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, MUSIC_DIR);
   },
   filename: (req, file, cb) => {
-    // Decodificar nombre UTF-8 en caso de caracteres especiales o acentos
     const rawOriginal = Buffer.from(file.originalname, 'latin1').toString('utf8');
     const cleanName = rawOriginal.replace(/[/\\?%*:|"<>]/g, '_');
     cb(null, cleanName);
@@ -81,41 +82,52 @@ const upload = multer({
       cb(new Error(`Extensión no permitida: ${ext}`), false);
     }
   },
-  limits: { fileSize: 250 * 1024 * 1024 } // Límite de 250MB por archivo
+  limits: { fileSize: 250 * 1024 * 1024 }
 });
 
-// Configuración de Ecualizador
+// =========================================================================
+// MOTOR DSP: ECUALIZADOR PARAMÉTRICO + LIMITER ANTI-CLIPPING
+// =========================================================================
 const DEFAULT_EQ = {
   enabled: true,
   preset: 'bass_boost',
   bands: [
-    { freq: 31.5, label: '31.5', gain: 6.0 },
-    { freq: 63, label: '63', gain: 6.0 },
-    { freq: 125, label: '125', gain: 4.5 },
-    { freq: 250, label: '250', gain: 2.0 },
-    { freq: 500, label: '500', gain: 0.5 },
-    { freq: 1000, label: '1k', gain: -2.0 },
-    { freq: 2000, label: '2k', gain: -1.5 },
-    { freq: 4000, label: '4k', gain: -1.0 },
-    { freq: 8000, label: '8k', gain: -1.0 },
-    { freq: 16000, label: '16k', gain: -1.0 }
+    { freq: 31.5, label: '31.5', gain: 3.5 },
+    { freq: 63, label: '63', gain: 5.0 },
+    { freq: 125, label: '125', gain: 3.5 },
+    { freq: 250, label: '250', gain: 1.0 },
+    { freq: 500, label: '500', gain: -0.5 },
+    { freq: 1000, label: '1k', gain: 0.0 },
+    { freq: 2000, label: '2k', gain: 0.5 },
+    { freq: 4000, label: '4k', gain: 1.0 },
+    { freq: 8000, label: '8k', gain: 1.5 },
+    { freq: 16000, label: '16k', gain: 2.0 }
   ]
 };
 
 let eqSettings = loadJSON(EQ_FILE, DEFAULT_EQ);
 
+const buildEqualizerFilter = (eq) => {
+  if (!eq || !eq.enabled || !eq.bands || eq.bands.length === 0) {
+    return '';
+  }
+
+  const maxGain = Math.max(0, ...eq.bands.map(b => Number(b.gain) || 0));
+  const preampDb = maxGain > 0 ? -(maxGain * 0.85).toFixed(1) : 0;
+
+  const eqFilters = eq.bands.map(
+    b => `equalizer=f=${b.freq}:width_type=o:w=1.2:g=${b.gain}`
+  );
+
+  return `lavfi=[volume=${preampDb}dB,${eqFilters.join(',')},alimiter=level_in=1:level_out=0.98:limit=0.98:attack=5:release=50]`;
+};
+
 // =========================================================================
-// MOTOR MPV IPC
+// MOTOR DE AUDIO: MPV IPC SOCKET
 // =========================================================================
 let mpvProcess = null;
 let mpvSocketClient = null;
 let isMpvReady = false;
-
-const buildEqualizerFilter = (eq) => {
-  if (!eq || !eq.enabled || !eq.bands || eq.bands.length === 0) return '';
-  const filters = eq.bands.map(b => `equalizer=f=${b.freq}:width_type=o:w=1:g=${b.gain}`);
-  return `lavfi=[${filters.join(',')}]`;
-};
 
 const sendMpvCommand = (commandArray) => {
   if (!mpvSocketClient || !isMpvReady) return;
@@ -137,6 +149,7 @@ const startMpvDaemon = () => {
     try { fs.unlinkSync(MPV_SOCKET); } catch (e) {}
   }
 
+  console.log('🚀 Iniciando proceso mpv en modo headless...');
   mpvProcess = spawn('mpv', [
     '--idle=yes',
     '--no-video',
@@ -192,7 +205,9 @@ process.on('exit', () => {
   }
 });
 
-// Normalizador y Escaneo
+// =========================================================================
+// NORMALIZACIÓN & PARSER DE METADATOS ID3
+// =========================================================================
 const isNumeric = (str) => typeof str === 'string' && /^\d+$/.test(str.trim());
 
 const normalizeGenre = (rawGenre) => {
@@ -327,86 +342,14 @@ const parseTrackID3 = async (relativePath) => {
   }
 };
 
-app.get('/api/cover', async (req, res) => {
-  const relativePath = req.query.path;
-  if (!relativePath) return res.status(400).send('Falta ruta');
-
-  const absolutePath = path.join(MUSIC_DIR, relativePath);
-  try {
-    const metadata = await musicMetadata.parseFile(absolutePath);
-    const picture = metadata.common.picture?.[0];
-
-    if (picture && picture.data) {
-      let mime = picture.format || 'image/jpeg';
-      if (!mime.includes('/')) mime = `image/${mime === 'jpg' ? 'jpeg' : mime}`;
-      if (mime === 'image/jpg') mime = 'image/jpeg';
-
-      res.set('Content-Type', mime);
-      res.set('Cache-Control', 'public, max-age=86400');
-      return res.send(picture.data);
-    }
-  } catch (e) {}
-  res.status(404).send('Sin carátula');
-});
-
 // =========================================================================
-// ENDPOINT DE CARGA DE ARCHIVOS (WEB UPLOADER)
+// ESTADO GLOBAL DEL SERVIDOR
 // =========================================================================
-app.post('/api/upload', upload.array('audioFiles', 100), async (req, res) => {
-  try {
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ error: 'No se subió ningún archivo' });
-    }
-
-    console.log(`📥 [Upload] ${req.files.length} archivo(s) recibido(s). Indexando...`);
-    const newIndexedTracks = [];
-
-    for (let i = 0; i < req.files.length; i++) {
-      const file = req.files[i];
-      const relPath = path.relative(MUSIC_DIR, file.path);
-      const parsedMeta = await parseTrackID3(relPath);
-
-      // Verificar si ya existe en la biblioteca para no duplicar IDs
-      const existingIdx = masterLibrary.findIndex(t => t.path === relPath);
-      const trackObj = {
-        id: existingIdx !== -1 ? masterLibrary[existingIdx].id : masterLibrary.length + newIndexedTracks.length + 1,
-        ...parsedMeta
-      };
-
-      if (existingIdx !== -1) {
-        masterLibrary[existingIdx] = trackObj;
-      } else {
-        newIndexedTracks.push(trackObj);
-      }
-    }
-
-    if (newIndexedTracks.length > 0) {
-      masterLibrary.push(...newIndexedTracks);
-    }
-
-    saveJSON(CACHE_FILE, masterLibrary);
-    rebuildQueue();
-    broadcastState();
-
-    console.log(`✅ [Upload Completo] ${req.files.length} pista(s) agregada(s) y transmitidas a los clientes.`);
-
-    res.json({
-      success: true,
-      message: `${req.files.length} archivo(s) subido(s) con éxito`,
-      uploadedCount: req.files.length
-    });
-  } catch (err) {
-    console.error('❌ [Upload Error]:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Estado Global
 let masterLibrary = [];
 let activeQueue = [];
 let currentIndex = 0;
 let isShuffle = false;
-let repeatMode = 'all';
+let repeatMode = 'all'; // 'off' | 'all' | 'one'
 let currentFilterMode = 'all';
 let selectedArtist = null;
 let selectedGenre = null;
@@ -556,6 +499,7 @@ const broadcastState = () => {
   });
 };
 
+// Inicialización Asíncrona Progresiva
 const initLibrary = async () => {
   const diskFiles = scanMusicDirectory(MUSIC_DIR);
   let cachedLibrary = loadJSON(CACHE_FILE, []);
@@ -564,14 +508,16 @@ const initLibrary = async () => {
     masterLibrary = cachedLibrary;
     rebuildQueue();
     broadcastState();
-    console.log(`⚡ [Cache v2] ${masterLibrary.length} canciones cargadas.`);
+    console.log(`⚡ [Cache v2] ${masterLibrary.length} canciones cargadas al instante.`);
     return;
   }
 
+  // Carga rápida inicial
   masterLibrary = diskFiles.map((file, idx) => quickParseTrack(file, idx));
   rebuildQueue();
   broadcastState();
 
+  // Enriquecimiento ID3 por lotes
   const enrichedList = [];
   const BATCH_SIZE = 25;
 
@@ -591,10 +537,12 @@ const initLibrary = async () => {
   saveJSON(CACHE_FILE, masterLibrary);
   rebuildQueue();
   broadcastState();
+  console.log(`✅ [Indexación Completa] ${masterLibrary.length} pistas con tags ID3.`);
 };
 
 initLibrary();
 
+// Reproducción y Control de Pistas
 const playCurrentTrack = async () => {
   if (!activeQueue.length) return;
   if (currentIndex < 0 || currentIndex >= activeQueue.length) currentIndex = 0;
@@ -639,6 +587,77 @@ const prevTrack = () => {
   playCurrentTrack();
 };
 
+// =========================================================================
+// RUTAS REST
+// =========================================================================
+app.get('/api/cover', async (req, res) => {
+  const relativePath = req.query.path;
+  if (!relativePath) return res.status(400).send('Falta ruta');
+
+  const absolutePath = path.join(MUSIC_DIR, relativePath);
+  try {
+    const metadata = await musicMetadata.parseFile(absolutePath);
+    const picture = metadata.common.picture?.[0];
+
+    if (picture && picture.data) {
+      let mime = picture.format || 'image/jpeg';
+      if (!mime.includes('/')) mime = `image/${mime === 'jpg' ? 'jpeg' : mime}`;
+      if (mime === 'image/jpg') mime = 'image/jpeg';
+
+      res.set('Content-Type', mime);
+      res.set('Cache-Control', 'public, max-age=86400');
+      return res.send(picture.data);
+    }
+  } catch (e) {}
+  res.status(404).send('Sin carátula');
+});
+
+app.post('/api/upload', upload.array('audioFiles', 100), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No se subió ningún archivo' });
+    }
+
+    console.log(`📥 [Upload] ${req.files.length} archivo(s) recibido(s).`);
+    const newIndexedTracks = [];
+
+    for (let i = 0; i < req.files.length; i++) {
+      const file = req.files[i];
+      const relPath = path.relative(MUSIC_DIR, file.path);
+      const parsedMeta = await parseTrackID3(relPath);
+
+      const existingIdx = masterLibrary.findIndex(t => t.path === relPath);
+      const trackObj = {
+        id: existingIdx !== -1 ? masterLibrary[existingIdx].id : masterLibrary.length + newIndexedTracks.length + 1,
+        ...parsedMeta
+      };
+
+      if (existingIdx !== -1) {
+        masterLibrary[existingIdx] = trackObj;
+      } else {
+        newIndexedTracks.push(trackObj);
+      }
+    }
+
+    if (newIndexedTracks.length > 0) {
+      masterLibrary.push(...newIndexedTracks);
+    }
+
+    saveJSON(CACHE_FILE, masterLibrary);
+    rebuildQueue();
+    broadcastState();
+
+    res.json({
+      success: true,
+      message: `${req.files.length} archivo(s) subido(s) con éxito`,
+      uploadedCount: req.files.length
+    });
+  } catch (err) {
+    console.error('❌ [Upload Error]:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/library', (req, res) => {
   res.json({
     masterLibrary,
@@ -655,6 +674,9 @@ app.get('/api/library', (req, res) => {
   });
 });
 
+// =========================================================================
+// WEBSOCKETS (SOCKET.IO)
+// =========================================================================
 io.on('connection', (socket) => {
   socket.emit('state_changed', {
     isPlaying,
@@ -798,4 +820,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = 3000;
-httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor con Web Uploader activo en puerto ${PORT}`));
+httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor DAP Full-Stack activo en puerto ${PORT}`));
