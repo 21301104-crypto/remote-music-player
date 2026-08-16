@@ -24,7 +24,7 @@ const DATA_DIR = path.resolve('data');
 const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
 const SUPPORTED_EXTENSIONS = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'];
 
-// 1. Asegurar persistencia de datos
+// 1. Persistencia de Favoritos
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
@@ -32,26 +32,25 @@ if (!fs.existsSync(DATA_DIR)) {
 const loadFavorites = () => {
   try {
     if (fs.existsSync(FAVORITES_FILE)) {
-      const data = fs.readFileSync(FAVORITES_FILE, 'utf-8');
-      return JSON.parse(data);
+      return JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf-8'));
     }
   } catch (err) {
-    console.error('[Storage Error] Leyendo favoritos:', err.message);
+    console.error('[Storage Error]:', err.message);
   }
   return [];
 };
 
-const saveFavorites = (favoritesArray) => {
+const saveFavorites = (favs) => {
   try {
-    fs.writeFileSync(FAVORITES_FILE, JSON.stringify(favoritesArray, null, 2));
+    fs.writeFileSync(FAVORITES_FILE, JSON.stringify(favs, null, 2));
   } catch (err) {
-    console.error('[Storage Error] Guardando favoritos:', err.message);
+    console.error('[Storage Error]:', err.message);
   }
 };
 
 let favoritesList = loadFavorites();
 
-// 2. Escaneo recursivo
+// 2. Escaneo de Archivos
 const scanMusicDirectory = (dirPath, arrayOfFiles = []) => {
   try {
     if (!fs.existsSync(dirPath)) return arrayOfFiles;
@@ -108,7 +107,7 @@ const getTrackMetadata = async (relativePath) => {
   }
 };
 
-// 4. Endpoint para carátulas integradas
+// 4. Carátulas HTTP
 app.get('/api/cover', async (req, res) => {
   const relativePath = req.query.path;
   if (!relativePath) return res.status(400).send('Falta ruta');
@@ -127,22 +126,21 @@ app.get('/api/cover', async (req, res) => {
       res.set('Cache-Control', 'public, max-age=86400');
       return res.send(picture.data);
     }
-  } catch (e) {
-    // Si no hay imagen en ID3
-  }
+  } catch (e) {}
   res.status(404).send('Sin carátula');
 });
 
-// 5. Estado del Motor de Audio
+// 5. Estado Global
 let masterLibrary = [];
 let activeQueue = [];
 let currentIndex = 0;
 let isShuffle = false;
-let currentFilterMode = 'all'; // 'all' | 'favorites' | 'artist'
+let currentFilterMode = 'all';
 let selectedArtist = null;
 let currentVolume = 10;
 let isPlaying = false;
 let trackTimer = null;
+
 let playStartTime = 0;
 let elapsedOffset = 0;
 
@@ -172,7 +170,6 @@ const shuffleArray = (array) => {
 
 const rebuildQueue = (startPath = null) => {
   let list = [];
-
   if (currentFilterMode === 'favorites') {
     list = masterLibrary.filter(t => favoritesList.includes(t.path));
   } else if (currentFilterMode === 'artist' && selectedArtist) {
@@ -181,10 +178,7 @@ const rebuildQueue = (startPath = null) => {
     list = [...masterLibrary];
   }
 
-  if (isShuffle) {
-    list = shuffleArray(list);
-  }
-
+  if (isShuffle) list = shuffleArray(list);
   activeQueue = list;
 
   if (startPath) {
@@ -235,6 +229,7 @@ const broadcastState = () => {
   });
 };
 
+// Reproducir una pista desde 0
 const playCurrentTrack = async () => {
   clearTrackTimer();
   if (!activeQueue.length) return;
@@ -245,7 +240,7 @@ const playCurrentTrack = async () => {
 
   const meta = await getTrackMetadata(track.path);
   currentTrackData = meta;
-  elapsedOffset = 0;
+  elapsedOffset = 0; // Reinicio a 0 para canciones nuevas
 
   exec(`termux-media-player play "${absolutePath}"`, (err) => {
     if (!err) {
@@ -276,7 +271,7 @@ const prevTrack = () => {
   playCurrentTrack();
 };
 
-// 6. Monitor de Hardware de Respaldo
+// 6. Monitor de Respaldo Hardware
 setInterval(() => {
   if (!isPlaying) return;
   if (Date.now() - playStartTime < 3000) return;
@@ -329,10 +324,13 @@ io.on('connection', (socket) => {
     playCurrentTrack();
   });
 
+  // CORRECCIÓN: Pausa y Reanudación Real
   socket.on('toggle_play', () => {
     if (isPlaying) {
       clearTrackTimer();
+      // Guardar exactamente cuánto tiempo ha transcurrido
       elapsedOffset += (Date.now() - playStartTime) / 1000;
+      
       exec('termux-media-player pause', (err) => {
         if (!err) {
           isPlaying = false;
@@ -341,14 +339,19 @@ io.on('connection', (socket) => {
       });
     } else {
       if (currentTrackData.path) {
-        const absolutePath = path.join(MUSIC_DIR, currentTrackData.path);
-        playStartTime = Date.now();
-        exec(`termux-media-player play "${absolutePath}"`, (err) => {
+        // REANUDAR: Ejecutar SIN argumentos para continuar donde se pausó
+        exec('termux-media-player play', (err) => {
           if (!err) {
             isPlaying = true;
+            playStartTime = Date.now();
             broadcastState();
+
+            // Reanudar temporizador restante
             const remainingSecs = Math.max(currentTrackData.duration - elapsedOffset, 1);
-            trackTimer = setTimeout(() => nextTrack(), remainingSecs * 1000);
+            trackTimer = setTimeout(() => nextTrack(), (remainingSecs + 1) * 1000);
+          } else {
+            // Fallback si el buffer se cerró
+            playCurrentTrack();
           }
         });
       } else {
@@ -366,7 +369,6 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  // Filtrar por Todos, Favoritos o Artista
   socket.on('set_filter', ({ mode, artist }) => {
     currentFilterMode = mode;
     selectedArtist = artist || null;
@@ -374,7 +376,6 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  // Toggle Favorito y persistencia
   socket.on('toggle_favorite', (trackPath) => {
     if (favoritesList.includes(trackPath)) {
       favoritesList = favoritesList.filter(p => p !== trackPath);
@@ -383,7 +384,6 @@ io.on('connection', (socket) => {
     }
     saveFavorites(favoritesList);
 
-    // Si estábamos viendo la lista de favoritos, actualizamos la cola en caliente
     if (currentFilterMode === 'favorites') {
       rebuildQueue(currentTrackData.path);
     }
@@ -400,4 +400,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = 3000;
-httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Motor activo con favoritos en puerto ${PORT}`));
+httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor activo en puerto ${PORT}`));
