@@ -22,35 +22,73 @@ app.use(express.static('dist'));
 const MUSIC_DIR = '/storage/9C33-6BBD/Music';
 const DATA_DIR = path.resolve('data');
 const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
+const PLAYLISTS_FILE = path.join(DATA_DIR, 'playlists.json');
 const SUPPORTED_EXTENSIONS = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'];
 
-// 1. Persistencia de Favoritos
+// 1. Persistencia (Favoritos y Playlists)
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-const loadFavorites = () => {
+const loadJSON = (file, fallback = []) => {
   try {
-    if (fs.existsSync(FAVORITES_FILE)) {
-      return JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf-8'));
+    if (fs.existsSync(file)) {
+      return JSON.parse(fs.readFileSync(file, 'utf-8'));
     }
   } catch (err) {
-    console.error('[Storage Error]:', err.message);
+    console.error(`[Storage Error] Leyendo ${file}:`, err.message);
   }
-  return [];
+  return fallback;
 };
 
-const saveFavorites = (favs) => {
+const saveJSON = (file, data) => {
   try {
-    fs.writeFileSync(FAVORITES_FILE, JSON.stringify(favs, null, 2));
+    fs.writeFileSync(file, JSON.stringify(data, null, 2));
   } catch (err) {
-    console.error('[Storage Error]:', err.message);
+    console.error(`[Storage Error] Guardando ${file}:`, err.message);
   }
 };
 
-let favoritesList = loadFavorites();
+let favoritesList = loadJSON(FAVORITES_FILE, []);
+let playlistsList = loadJSON(PLAYLISTS_FILE, []);
 
-// 2. Escaneo de Archivos
+// 2. Normalizador de Géneros
+const normalizeAndCleanGenre = (rawGenre, artistName = '', folderPath = '') => {
+  if (!rawGenre || typeof rawGenre !== 'string') return 'Varios';
+  if (/[ÐÑ][\x80-\xFF]/.test(rawGenre)) return 'Varios';
+
+  const clean = rawGenre.trim();
+  const lower = clean.toLowerCase();
+
+  if (lower.includes('rock') || lower.includes('metal') || lower.includes('punk') || lower.includes('grunge') || lower.includes('alternative')) {
+    return 'Rock / Alternativo';
+  }
+  if (lower.includes('pop') || lower.includes('dance') || lower.includes('disco') || lower.includes('k-pop')) {
+    return 'Pop / Dance';
+  }
+  if (lower.includes('electro') || lower.includes('edm') || lower.includes('techno') || lower.includes('house') || lower.includes('synth')) {
+    return 'Electrónica';
+  }
+  if (lower.includes('latin') || lower.includes('bachata') || lower.includes('salsa') || lower.includes('reggaeton') || lower.includes('cumbia') || lower.includes('bolero') || lower.includes('mariachi')) {
+    return 'Latino / Regional';
+  }
+  if (lower.includes('hip') || lower.includes('rap') || lower.includes('trap') || lower.includes('r&b')) {
+    return 'Hip-Hop / Rap';
+  }
+  if (lower.includes('classic') || lower.includes('soundtrack') || lower.includes('score') || lower.includes('film') || lower.includes('games')) {
+    return 'Soundtracks / Clásica';
+  }
+  if (lower.includes('jazz') || lower.includes('blues') || lower.includes('acoustic') || lower.includes('country') || lower.includes('lo-fi')) {
+    return 'Acústico / Jazz';
+  }
+  if (lower.includes('unknown') || lower === 'other' || lower === 'various') {
+    return 'Varios';
+  }
+
+  return clean.length <= 15 ? clean.charAt(0).toUpperCase() + clean.slice(1) : 'Varios';
+};
+
+// 3. Escaneo Recursivo
 const scanMusicDirectory = (dirPath, arrayOfFiles = []) => {
   try {
     if (!fs.existsSync(dirPath)) return arrayOfFiles;
@@ -74,22 +112,25 @@ const scanMusicDirectory = (dirPath, arrayOfFiles = []) => {
   return arrayOfFiles;
 };
 
-// 3. Metadatos ID3
+// 4. Metadatos ID3
 const getTrackMetadata = async (relativePath) => {
   const absolutePath = path.join(MUSIC_DIR, relativePath);
   try {
     const metadata = await musicMetadata.parseFile(absolutePath);
-    const { title, artist, album, year } = metadata.common;
+    const { title, artist, album, year, genre } = metadata.common;
     const duration = metadata.format.duration || 0;
 
     const rawName = path.basename(relativePath, path.extname(relativePath));
     const parts = rawName.split(' - ');
+    const rawGenreString = (genre && genre.length > 0) ? genre[0] : '';
+    const cleanGenre = normalizeAndCleanGenre(rawGenreString, artist, relativePath);
 
     return {
       path: relativePath,
       title: title || (parts.length > 1 ? parts[1].trim() : rawName),
       artist: artist || (parts.length > 1 ? parts[0].trim() : 'Varios'),
       album: album || 'MicroSD Audio',
+      genre: cleanGenre,
       year: year || null,
       duration: Math.round(duration)
     };
@@ -101,13 +142,14 @@ const getTrackMetadata = async (relativePath) => {
       title: parts.length > 1 ? parts[1].trim() : rawName,
       artist: parts.length > 1 ? parts[0].trim() : 'Varios',
       album: 'MicroSD Audio',
+      genre: 'Varios',
       year: null,
       duration: 0
     };
   }
 };
 
-// 4. Carátulas HTTP
+// 5. Endpoint de Carátulas
 app.get('/api/cover', async (req, res) => {
   const relativePath = req.query.path;
   if (!relativePath) return res.status(400).send('Falta ruta');
@@ -130,13 +172,15 @@ app.get('/api/cover', async (req, res) => {
   res.status(404).send('Sin carátula');
 });
 
-// 5. Estado Global
+// 6. Estado Global del Servidor
 let masterLibrary = [];
 let activeQueue = [];
 let currentIndex = 0;
 let isShuffle = false;
-let currentFilterMode = 'all';
+let currentFilterMode = 'all'; // 'all' | 'favorites' | 'artist' | 'genre' | 'playlist'
 let selectedArtist = null;
+let selectedGenre = null;
+let selectedPlaylistId = null;
 let currentVolume = 10;
 let isPlaying = false;
 let trackTimer = null;
@@ -149,7 +193,83 @@ let currentTrackData = {
   title: null,
   artist: null,
   album: null,
+  genre: 'Varios',
   duration: 0
+};
+
+// Sleep Timer
+let sleepTimerInterval = null;
+let sleepTimerEndsAt = 0;
+let sleepTimerBaseVolume = 10;
+let isFadingOut = false;
+
+const getSleepTimerState = () => {
+  if (!sleepTimerEndsAt || sleepTimerEndsAt <= Date.now()) {
+    return { active: false, remainingSeconds: 0 };
+  }
+  return {
+    active: true,
+    remainingSeconds: Math.max(0, Math.ceil((sleepTimerEndsAt - Date.now()) / 1000)),
+    endsAt: sleepTimerEndsAt
+  };
+};
+
+const startSleepTimer = (minutes) => {
+  cancelSleepTimer(false);
+  if (!minutes || minutes <= 0) return;
+
+  sleepTimerBaseVolume = currentVolume;
+  sleepTimerEndsAt = Date.now() + (minutes * 60 * 1000);
+  isFadingOut = false;
+
+  sleepTimerInterval = setInterval(() => {
+    const now = Date.now();
+    const remainingMs = sleepTimerEndsAt - now;
+    const remainingSecs = Math.ceil(remainingMs / 1000);
+
+    if (remainingSecs <= 60 && remainingSecs > 0) {
+      isFadingOut = true;
+      const ratio = remainingSecs / 60;
+      const targetVol = Math.max(0, Math.round(sleepTimerBaseVolume * ratio));
+
+      if (targetVol !== currentVolume) {
+        currentVolume = targetVol;
+        exec(`termux-volume music ${currentVolume}`);
+      }
+    } else if (remainingSecs <= 0) {
+      clearInterval(sleepTimerInterval);
+      sleepTimerInterval = null;
+      sleepTimerEndsAt = 0;
+      isFadingOut = false;
+
+      clearTrackTimer();
+      exec('termux-media-player pause', () => {
+        isPlaying = false;
+        currentVolume = sleepTimerBaseVolume;
+        exec(`termux-volume music ${currentVolume}`);
+        broadcastState();
+      });
+      return;
+    }
+
+    broadcastState();
+  }, 1000);
+
+  broadcastState();
+};
+
+const cancelSleepTimer = (restoreVolume = true) => {
+  if (sleepTimerInterval) {
+    clearInterval(sleepTimerInterval);
+    sleepTimerInterval = null;
+  }
+  if (restoreVolume && isFadingOut) {
+    currentVolume = sleepTimerBaseVolume;
+    exec(`termux-volume music ${currentVolume}`);
+  }
+  sleepTimerEndsAt = 0;
+  isFadingOut = false;
+  broadcastState();
 };
 
 const clearTrackTimer = () => {
@@ -168,12 +288,23 @@ const shuffleArray = (array) => {
   return shuffled;
 };
 
+// Reconstrucción de Cola con soporte para Playlists
 const rebuildQueue = (startPath = null) => {
   let list = [];
   if (currentFilterMode === 'favorites') {
     list = masterLibrary.filter(t => favoritesList.includes(t.path));
   } else if (currentFilterMode === 'artist' && selectedArtist) {
     list = masterLibrary.filter(t => t.artist === selectedArtist);
+  } else if (currentFilterMode === 'genre' && selectedGenre) {
+    list = masterLibrary.filter(t => t.genre === selectedGenre);
+  } else if (currentFilterMode === 'playlist' && selectedPlaylistId) {
+    const pl = playlistsList.find(p => p.id === selectedPlaylistId);
+    if (pl && pl.tracks) {
+      // Mapear rutas de la playlist al objeto completo en masterLibrary respetando el orden
+      list = pl.tracks.map(p => masterLibrary.find(t => t.path === p)).filter(Boolean);
+    } else {
+      list = [...masterLibrary];
+    }
   } else {
     list = [...masterLibrary];
   }
@@ -205,7 +336,14 @@ const initLibrary = () => {
     } else if (folderName !== '.') {
       artist = folderName.split(path.sep)[0];
     }
-    return { id: index + 1, path: relPath, title, artist };
+
+    return {
+      id: index + 1,
+      path: relPath,
+      title,
+      artist,
+      genre: 'Varios'
+    };
   });
 
   rebuildQueue();
@@ -219,17 +357,20 @@ const broadcastState = () => {
     isShuffle,
     currentFilterMode,
     selectedArtist,
+    selectedGenre,
+    selectedPlaylistId,
     currentVolume,
     currentTrack: currentTrackData,
     queue: activeQueue,
     masterLibrary,
     favorites: favoritesList,
+    playlists: playlistsList,
     playStartTime,
-    elapsedOffset
+    elapsedOffset,
+    sleepTimer: getSleepTimerState()
   });
 };
 
-// Reproducir una pista desde 0
 const playCurrentTrack = async () => {
   clearTrackTimer();
   if (!activeQueue.length) return;
@@ -240,7 +381,10 @@ const playCurrentTrack = async () => {
 
   const meta = await getTrackMetadata(track.path);
   currentTrackData = meta;
-  elapsedOffset = 0; // Reinicio a 0 para canciones nuevas
+  elapsedOffset = 0;
+
+  const libItem = masterLibrary.find(t => t.path === track.path);
+  if (libItem) libItem.genre = meta.genre;
 
   exec(`termux-media-player play "${absolutePath}"`, (err) => {
     if (!err) {
@@ -271,7 +415,7 @@ const prevTrack = () => {
   playCurrentTrack();
 };
 
-// 6. Monitor de Respaldo Hardware
+// 7. Monitor Hardware
 setInterval(() => {
   if (!isPlaying) return;
   if (Date.now() - playStartTime < 3000) return;
@@ -286,16 +430,18 @@ setInterval(() => {
   });
 }, 2000);
 
-// 7. REST y WebSockets
+// 8. REST & WebSockets
 app.get('/api/library', (req, res) => {
   res.json({
     masterLibrary,
     activeQueue,
     favorites: favoritesList,
+    playlists: playlistsList,
     currentTrack: currentTrackData,
     isPlaying,
     playStartTime,
-    elapsedOffset
+    elapsedOffset,
+    sleepTimer: getSleepTimerState()
   });
 });
 
@@ -305,13 +451,17 @@ io.on('connection', (socket) => {
     isShuffle,
     currentFilterMode,
     selectedArtist,
+    selectedGenre,
+    selectedPlaylistId,
     currentVolume,
     currentTrack: currentTrackData,
     queue: activeQueue,
     masterLibrary,
     favorites: favoritesList,
+    playlists: playlistsList,
     playStartTime,
-    elapsedOffset
+    elapsedOffset,
+    sleepTimer: getSleepTimerState()
   });
 
   socket.on('play_track', (targetPath) => {
@@ -324,13 +474,10 @@ io.on('connection', (socket) => {
     playCurrentTrack();
   });
 
-  // CORRECCIÓN: Pausa y Reanudación Real
   socket.on('toggle_play', () => {
     if (isPlaying) {
       clearTrackTimer();
-      // Guardar exactamente cuánto tiempo ha transcurrido
       elapsedOffset += (Date.now() - playStartTime) / 1000;
-      
       exec('termux-media-player pause', (err) => {
         if (!err) {
           isPlaying = false;
@@ -339,18 +486,15 @@ io.on('connection', (socket) => {
       });
     } else {
       if (currentTrackData.path) {
-        // REANUDAR: Ejecutar SIN argumentos para continuar donde se pausó
         exec('termux-media-player play', (err) => {
           if (!err) {
             isPlaying = true;
             playStartTime = Date.now();
             broadcastState();
 
-            // Reanudar temporizador restante
             const remainingSecs = Math.max(currentTrackData.duration - elapsedOffset, 1);
             trackTimer = setTimeout(() => nextTrack(), (remainingSecs + 1) * 1000);
           } else {
-            // Fallback si el buffer se cerró
             playCurrentTrack();
           }
         });
@@ -369,9 +513,11 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
-  socket.on('set_filter', ({ mode, artist }) => {
+  socket.on('set_filter', ({ mode, artist, genre, playlistId }) => {
     currentFilterMode = mode;
     selectedArtist = artist || null;
+    selectedGenre = genre || null;
+    selectedPlaylistId = playlistId || null;
     rebuildQueue();
     broadcastState();
   });
@@ -382,7 +528,7 @@ io.on('connection', (socket) => {
     } else {
       favoritesList.push(trackPath);
     }
-    saveFavorites(favoritesList);
+    saveJSON(FAVORITES_FILE, favoritesList);
 
     if (currentFilterMode === 'favorites') {
       rebuildQueue(currentTrackData.path);
@@ -391,13 +537,66 @@ io.on('connection', (socket) => {
     broadcastState();
   });
 
+  // --- CRUD DE PLAYLISTS ---
+  socket.on('create_playlist', (name) => {
+    if (!name || !name.trim()) return;
+    const newPlaylist = {
+      id: `pl_${Date.now()}`,
+      name: name.trim(),
+      tracks: [],
+      createdAt: Date.now()
+    };
+    playlistsList.push(newPlaylist);
+    saveJSON(PLAYLISTS_FILE, playlistsList);
+    broadcastState();
+  });
+
+  socket.on('delete_playlist', (playlistId) => {
+    playlistsList = playlistsList.filter(p => p.id !== playlistId);
+    saveJSON(PLAYLISTS_FILE, playlistsList);
+    if (currentFilterMode === 'playlist' && selectedPlaylistId === playlistId) {
+      currentFilterMode = 'all';
+      selectedPlaylistId = null;
+      rebuildQueue();
+    }
+    broadcastState();
+  });
+
+  socket.on('add_to_playlist', ({ playlistId, trackPath }) => {
+    const pl = playlistsList.find(p => p.id === playlistId);
+    if (pl && !pl.tracks.includes(trackPath)) {
+      pl.tracks.push(trackPath);
+      saveJSON(PLAYLISTS_FILE, playlistsList);
+      if (currentFilterMode === 'playlist' && selectedPlaylistId === playlistId) {
+        rebuildQueue(currentTrackData.path);
+      }
+      broadcastState();
+    }
+  });
+
+  socket.on('remove_from_playlist', ({ playlistId, trackPath }) => {
+    const pl = playlistsList.find(p => p.id === playlistId);
+    if (pl) {
+      pl.tracks = pl.tracks.filter(p => p !== trackPath);
+      saveJSON(PLAYLISTS_FILE, playlistsList);
+      if (currentFilterMode === 'playlist' && selectedPlaylistId === playlistId) {
+        rebuildQueue(currentTrackData.path);
+      }
+      broadcastState();
+    }
+  });
+
   socket.on('set_volume', (level) => {
     currentVolume = Math.min(Math.max(parseInt(level, 10) || 0, 0), 15);
+    if (!isFadingOut) sleepTimerBaseVolume = currentVolume;
     exec(`termux-volume music ${currentVolume}`, (err) => {
       if (!err) broadcastState();
     });
   });
+
+  socket.on('set_sleep_timer', (minutes) => startSleepTimer(minutes));
+  socket.on('cancel_sleep_timer', () => cancelSleepTimer(true));
 });
 
 const PORT = 3000;
-httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor activo en puerto ${PORT}`));
+httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor con Playlists activo en puerto ${PORT}`));
