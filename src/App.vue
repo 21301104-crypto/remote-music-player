@@ -107,7 +107,7 @@ const changeVolume = () => {
   socket.emit('set_volume', volume.value);
 };
 
-// Acciones Modales
+// Modales
 const setSleepTimer = (minutes) => socket.emit('set_sleep_timer', minutes);
 const cancelSleepTimer = () => socket.emit('cancel_sleep_timer');
 const handleUpdateEq = (newEq) => socket.emit('set_eq', newEq);
@@ -251,350 +251,375 @@ onUnmounted(() => {
 
 <template>
   <div class="app-viewport" :style="themeStyleObject">
-    <!-- Navbar Header -->
-    <header class="navbar">
-      <div class="brand">
-        <span class="brand-monogram">HI-FI</span>
-        <h2>SOUND<span class="brand-accent">WAVE</span></h2>
-      </div>
+    <!-- CONTENEDOR GRID RESPONSIVO -->
+    <div class="app-responsive-container">
 
-      <div class="header-actions">
-        <!-- Botón Web Uploader -->
-        <button 
-          class="btn-header-icon" 
-          @click="isUploaderModalOpen = true"
-          title="Subir canciones a la MicroSD"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="17 8 12 3 7 8"></polyline>
-            <line x1="12" y1="3" x2="12" y2="15"></line>
-          </svg>
-        </button>
-
-        <!-- Botón Ecualizador DSP -->
-        <button 
-          class="btn-header-icon" 
-          :class="{ active: eqSettings.enabled }"
-          @click="isEqualizerModalOpen = true"
-          title="Ecualizador DSP"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="4" y1="21" x2="4" y2="14"></line>
-            <line x1="4" y1="10" x2="4" y2="3"></line>
-            <line x1="12" y1="21" x2="12" y2="12"></line>
-            <line x1="12" y1="8" x2="12" y2="3"></line>
-            <line x1="20" y1="21" x2="20" y2="16"></line>
-            <line x1="20" y1="12" x2="20" y2="3"></line>
-          </svg>
-        </button>
-
-        <!-- Botón Sleep Timer -->
-        <button 
-          class="btn-header-icon" 
-          :class="{ active: sleepTimer.active }"
-          @click="isSleepTimerModalOpen = true"
-          title="Sleep Timer"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
-          </svg>
-          <span v-if="sleepTimer.active" class="timer-mini-text">{{ formatShortTimer(sleepTimer.remainingSeconds) }}</span>
-        </button>
-
-        <div class="status-pill" :class="{ connected: isConnected }">
-          <span class="status-indicator"></span>
-          <span class="status-text">{{ isConnected ? 'DAP' : 'OFF' }}</span>
-        </div>
-      </div>
-    </header>
-
-    <!-- Selector de Categorías -->
-    <div class="category-toggle">
-      <button 
-        class="toggle-tab" 
-        :class="{ active: filterCategoryTab === 'artists' }" 
-        @click="filterCategoryTab = 'artists'"
-      >
-        ARTISTAS ({{ uniqueArtists.length }})
-      </button>
-      <button 
-        class="toggle-tab" 
-        :class="{ active: filterCategoryTab === 'playlists' }" 
-        @click="filterCategoryTab = 'playlists'"
-      >
-        PLAYLISTS ({{ playlists.length }})
-      </button>
-      <button 
-        class="toggle-tab" 
-        :class="{ active: filterCategoryTab === 'genres' }" 
-        @click="filterCategoryTab = 'genres'"
-      >
-        GÉNEROS
-      </button>
-    </div>
-
-    <!-- Barra de Filtros Strip -->
-    <nav class="filter-strip">
-      <button 
-        class="tab-btn" 
-        :class="{ active: currentFilterMode === 'all' }" 
-        @click="setFilter('all')"
-      >
-        <span>Todos</span>
-        <small>{{ masterLibrary.length }}</small>
-      </button>
-
-      <button 
-        class="tab-btn tab-fav" 
-        :class="{ active: currentFilterMode === 'favorites' }" 
-        @click="setFilter('favorites')"
-      >
-        <svg class="tab-fav-icon" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
-        </svg>
-        <span>Favoritos</span>
-        <small>{{ favorites.length }}</small>
-      </button>
-
-      <!-- ARTISTAS -->
-      <template v-if="filterCategoryTab === 'artists'">
-        <button 
-          v-for="artist in uniqueArtists" 
-          :key="artist"
-          class="tab-btn"
-          :class="{ active: currentFilterMode === 'artist' && selectedArtist === artist }"
-          @click="setFilter('artist', artist)"
-        >
-          <span>{{ artist }}</span>
-        </button>
-      </template>
-
-      <!-- PLAYLISTS -->
-      <template v-else-if="filterCategoryTab === 'playlists'">
-        <button class="tab-btn btn-new-pl" @click="openCreatePlaylistModal">
-          <span>➕ Nueva</span>
-        </button>
-        <button 
-          v-for="pl in playlists" 
-          :key="pl.id"
-          class="tab-btn tab-pl-item"
-          :class="{ active: currentFilterMode === 'playlist' && selectedPlaylistId === pl.id }"
-          @click="setFilter('playlist', pl.id)"
-        >
-          <span>{{ pl.name }}</span>
-          <small>{{ pl.tracks.length }}</small>
-          <span class="btn-del-pl" @click="handleDeletePlaylist(pl.id, $event)">✕</span>
-        </button>
-      </template>
-
-      <!-- GÉNEROS -->
-      <template v-else>
-        <button 
-          v-for="genre in uniqueGenres" 
-          :key="genre"
-          class="tab-btn"
-          :class="{ active: currentFilterMode === 'genre' && selectedGenre === genre }"
-          @click="setFilter('genre', genre)"
-        >
-          <span>{{ genre }}</span>
-        </button>
-      </template>
-    </nav>
-
-    <!-- REPRODUCTOR PRINCIPAL -->
-    <section class="player-card">
-      <div class="card-blur-backdrop" v-if="coverUrl">
-        <img :src="coverUrl" alt="" class="card-blur-img" />
-        <div class="card-blur-vignette"></div>
-      </div>
-
-      <div class="deck-inner-content">
-        <div class="deck-top-row">
-          <div class="badge-group">
-            <span class="deck-badge">{{ currentTrack.genre || 'HI-RES AUDIO' }}</span>
-            <span v-if="eqSettings.enabled" class="deck-eq-badge">DSP: {{ eqSettings.preset.toUpperCase() }}</span>
+      <!-- ================================================================= -->
+      <!-- COLUMNA 1 (IZQUIERDA EN PC / SUPERIOR EN MÓVIL): PLAYER DECK     -->
+      <!-- ================================================================= -->
+      <aside class="sidebar-panel">
+        <!-- Header de la App -->
+        <header class="navbar">
+          <div class="brand">
+            <span class="brand-monogram">HI-FI</span>
+            <h2>SOUND<span class="brand-accent">WAVE</span></h2>
           </div>
+
+          <div class="header-actions">
+            <!-- Botón Web Uploader -->
+            <button 
+              class="btn-header-icon" 
+              @click="isUploaderModalOpen = true"
+              title="Subir canciones a la MicroSD"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
+              </svg>
+            </button>
+
+            <!-- Botón Ecualizador DSP -->
+            <button 
+              class="btn-header-icon" 
+              :class="{ active: eqSettings.enabled }"
+              @click="isEqualizerModalOpen = true"
+              title="Ecualizador DSP"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="4" y1="21" x2="4" y2="14"></line>
+                <line x1="4" y1="10" x2="4" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="12"></line>
+                <line x1="12" y1="8" x2="12" y2="3"></line>
+                <line x1="20" y1="21" x2="20" y2="16"></line>
+                <line x1="20" y1="12" x2="20" y2="3"></line>
+              </svg>
+            </button>
+
+            <!-- Botón Sleep Timer -->
+            <button 
+              class="btn-header-icon" 
+              :class="{ active: sleepTimer.active }"
+              @click="isSleepTimerModalOpen = true"
+              title="Sleep Timer"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+              </svg>
+              <span v-if="sleepTimer.active" class="timer-mini-text">{{ formatShortTimer(sleepTimer.remainingSeconds) }}</span>
+            </button>
+
+            <div class="status-pill" :class="{ connected: isConnected }">
+              <span class="status-indicator"></span>
+              <span class="status-text">{{ isConnected ? 'DAP' : 'OFF' }}</span>
+            </div>
+          </div>
+        </header>
+
+        <!-- Tarjeta del Reproductor Principal con Cover Blur -->
+        <section class="player-card">
+          <div class="card-blur-backdrop" v-if="coverUrl">
+            <img :src="coverUrl" alt="" class="card-blur-img" />
+            <div class="card-blur-vignette"></div>
+          </div>
+
+          <div class="deck-inner-content">
+            <div class="deck-top-row">
+              <div class="badge-group">
+                <span class="deck-badge">{{ currentTrack.genre || 'HI-RES AUDIO' }}</span>
+                <span v-if="eqSettings.enabled" class="deck-eq-badge">DSP: {{ eqSettings.preset.toUpperCase() }}</span>
+              </div>
+              <button 
+                v-if="currentTrack.path"
+                class="fav-deck-btn"
+                :class="{ is_active: isTrackFavorite(currentTrack.path) }"
+                @click="toggleFavorite(currentTrack.path, $event)"
+              >
+                <svg viewBox="0 0 24 24" :fill="isTrackFavorite(currentTrack.path) ? '#ef4444' : 'none'" stroke="#ef4444" stroke-width="2">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                </svg>
+              </button>
+            </div>
+
+            <div class="cover-container">
+              <img 
+                v-if="coverUrl" 
+                :src="coverUrl" 
+                alt="Cover" 
+                class="cover-art"
+                @error="handleImageError"
+              />
+              <div v-else class="cover-fallback">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+              </div>
+            </div>
+
+            <!-- Metadatos ID3 -->
+            <div class="track-meta-center">
+              <h3 class="track-title-main">{{ currentTrack.title || 'Pista no seleccionada' }}</h3>
+              <p class="track-artist-main">{{ currentTrack.artist || 'Elige una canción' }}</p>
+              <span v-if="currentTrack.album" class="track-album-main">{{ currentTrack.album }}</span>
+            </div>
+
+            <!-- Barra de Progreso -->
+            <div class="progress-box">
+              <div class="progress-track">
+                <div class="progress-fill" :style="{ width: `${progressPercent}%` }">
+                  <div class="progress-thumb"></div>
+                </div>
+              </div>
+              <div class="progress-times">
+                <span>{{ formatTime(currentTime) }}</span>
+                <span>{{ formatTime(currentTrack.duration) }}</span>
+              </div>
+            </div>
+
+            <!-- Botonera -->
+            <div class="controls-deck">
+              <button 
+                class="btn-deck-action" 
+                :class="{ active: isShuffle }" 
+                @click="toggleShuffle"
+                title="Modo Aleatorio"
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>
+                </svg>
+              </button>
+
+              <button class="btn-deck-skip" @click="prevTrack" title="Anterior">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
+                </svg>
+              </button>
+
+              <button class="btn-deck-play" @click="togglePlay" title="Play/Pausa">
+                <svg v-if="isPlaying" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+                </svg>
+                <svg v-else viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M8 5v14l11-7z"/>
+                </svg>
+              </button>
+
+              <button class="btn-deck-skip" @click="nextTrack" title="Siguiente">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
+                </svg>
+              </button>
+
+              <button 
+                class="btn-deck-action btn-repeat" 
+                :class="{ active: repeatMode !== 'off' }" 
+                @click="toggleRepeat"
+                :title="`Modo Repetir: ${repeatMode}`"
+              >
+                <div class="repeat-icon-box">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="17 1 21 5 17 9"></polyline>
+                    <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
+                    <polyline points="7 23 3 19 7 15"></polyline>
+                    <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
+                  </svg>
+                  <span v-if="repeatMode === 'one'" class="repeat-badge-one">1</span>
+                </div>
+              </button>
+            </div>
+
+            <!-- Hardware Volume -->
+            <div class="hardware-volume">
+              <span class="vol-label">VOL</span>
+              <input 
+                type="range" 
+                min="0" 
+                max="15" 
+                v-model.number="volume" 
+                @input="changeVolume"
+                class="hw-slider"
+              />
+              <span class="hw-vol-num">{{ volume }}</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+
+      <!-- ================================================================= -->
+      <!-- COLUMNA 2 (DERECHA EN PC / INFERIOR EN MÓVIL): EXPLORADOR & COLA -->
+      <!-- ================================================================= -->
+      <main class="main-content-panel">
+        <!-- Selector de Categorías -->
+        <div class="category-toggle">
           <button 
-            v-if="currentTrack.path"
-            class="fav-deck-btn"
-            :class="{ is_active: isTrackFavorite(currentTrack.path) }"
-            @click="toggleFavorite(currentTrack.path, $event)"
+            class="toggle-tab" 
+            :class="{ active: filterCategoryTab === 'artists' }" 
+            @click="filterCategoryTab = 'artists'"
           >
-            <svg viewBox="0 0 24 24" :fill="isTrackFavorite(currentTrack.path) ? '#ef4444' : 'none'" stroke="#ef4444" stroke-width="2">
+            ARTISTAS ({{ uniqueArtists.length }})
+          </button>
+          <button 
+            class="toggle-tab" 
+            :class="{ active: filterCategoryTab === 'playlists' }" 
+            @click="filterCategoryTab = 'playlists'"
+          >
+            PLAYLISTS ({{ playlists.length }})
+          </button>
+          <button 
+            class="toggle-tab" 
+            :class="{ active: filterCategoryTab === 'genres' }" 
+            @click="filterCategoryTab = 'genres'"
+          >
+            GÉNEROS ({{ uniqueGenres.length }})
+          </button>
+        </div>
+
+        <!-- Barra de Filtros Strip -->
+        <nav class="filter-strip">
+          <button 
+            class="tab-btn" 
+            :class="{ active: currentFilterMode === 'all' }" 
+            @click="setFilter('all')"
+          >
+            <span>Todos</span>
+            <small>{{ masterLibrary.length }}</small>
+          </button>
+
+          <button 
+            class="tab-btn tab-fav" 
+            :class="{ active: currentFilterMode === 'favorites' }" 
+            @click="setFilter('favorites')"
+          >
+            <svg class="tab-fav-icon" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
             </svg>
-          </button>
-        </div>
-
-        <div class="cover-container">
-          <img 
-            v-if="coverUrl" 
-            :src="coverUrl" 
-            alt="Cover" 
-            class="cover-art"
-            @error="handleImageError"
-          />
-          <div v-else class="cover-fallback">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <circle cx="12" cy="12" r="10"></circle>
-              <circle cx="12" cy="12" r="3"></circle>
-            </svg>
-          </div>
-        </div>
-
-        <!-- Metadatos ID3 -->
-        <div class="track-meta-center">
-          <h3 class="track-title-main">{{ currentTrack.title || 'Pista no seleccionada' }}</h3>
-          <p class="track-artist-main">{{ currentTrack.artist || 'Elige una canción' }}</p>
-          <span v-if="currentTrack.album" class="track-album-main">{{ currentTrack.album }}</span>
-        </div>
-
-        <!-- Barra de Progreso -->
-        <div class="progress-box">
-          <div class="progress-track">
-            <div class="progress-fill" :style="{ width: `${progressPercent}%` }">
-              <div class="progress-thumb"></div>
-            </div>
-          </div>
-          <div class="progress-times">
-            <span>{{ formatTime(currentTime) }}</span>
-            <span>{{ formatTime(currentTrack.duration) }}</span>
-          </div>
-        </div>
-
-        <!-- Botonera -->
-        <div class="controls-deck">
-          <button 
-            class="btn-deck-action" 
-            :class="{ active: isShuffle }" 
-            @click="toggleShuffle"
-            title="Modo Aleatorio"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>
-            </svg>
+            <span>Favoritos</span>
+            <small>{{ favorites.length }}</small>
           </button>
 
-          <button class="btn-deck-skip" @click="prevTrack" title="Anterior">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/>
-            </svg>
-          </button>
-
-          <button class="btn-deck-play" @click="togglePlay" title="Play/Pausa">
-            <svg v-if="isPlaying" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
-            </svg>
-            <svg v-else viewBox="0 0 24 24" fill="currentColor">
-              <path d="M8 5v14l11-7z"/>
-            </svg>
-          </button>
-
-          <button class="btn-deck-skip" @click="nextTrack" title="Siguiente">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-              <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/>
-            </svg>
-          </button>
-
-          <button 
-            class="btn-deck-action btn-repeat" 
-            :class="{ active: repeatMode !== 'off' }" 
-            @click="toggleRepeat"
-            :title="`Modo Repetir: ${repeatMode}`"
-          >
-            <div class="repeat-icon-box">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="17 1 21 5 17 9"></polyline>
-                <path d="M3 11V9a4 4 0 0 1 4-4h14"></path>
-                <polyline points="7 23 3 19 7 15"></polyline>
-                <path d="M21 13v2a4 4 0 0 1-4 4H3"></path>
-              </svg>
-              <span v-if="repeatMode === 'one'" class="repeat-badge-one">1</span>
-            </div>
-          </button>
-        </div>
-
-        <!-- Hardware Volume -->
-        <div class="hardware-volume">
-          <span class="vol-label">VOL</span>
-          <input 
-            type="range" 
-            min="0" 
-            max="15" 
-            v-model.number="volume" 
-            @input="changeVolume"
-            class="hw-slider"
-          />
-          <span class="hw-vol-num">{{ volume }}</span>
-        </div>
-      </div>
-    </section>
-
-    <!-- Cola Activa Priorizada -->
-    <section class="queue-card">
-      <div class="queue-header">
-        <h4>COLA DE REPRODUCCIÓN</h4>
-        <span class="queue-count">{{ displayedQueue.length }} pistas</span>
-      </div>
-
-      <div class="search-bar">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="11" cy="11" r="8"></circle>
-          <path d="M21 21l-4.35-4.35"></path>
-        </svg>
-        <input 
-          type="text" 
-          v-model="searchQuery" 
-          placeholder="Buscar por artista, título o álbum..." 
-        />
-      </div>
-
-      <ul v-if="displayedQueue.length > 0" class="track-queue">
-        <li 
-          v-for="(track, index) in displayedQueue" 
-          :key="track.id" 
-          @click="playTrack(track)"
-          :class="{ 
-            'is-active': currentTrack.path === track.path, 
-            'is-top-now': index === 0 && currentTrack.path === track.path 
-          }"
-        >
-          <div class="track-info">
-            <div class="title-row">
-              <span class="track-name">{{ track.title }}</span>
-              <span v-if="index === 0 && currentTrack.path === track.path" class="now-badge">
-                REPRODUCIENDO
-              </span>
-            </div>
-            <div class="sub-row">
-              <span class="track-artist-text">{{ track.artist }}</span>
-              <span v-if="track.album && track.album !== 'MicroSD Audio'" class="track-album-text">• {{ track.album }}</span>
-            </div>
-          </div>
-
-          <div class="item-actions">
-            <button class="btn-add-pl" @click="openAddToPlaylistModal(track, $event)" title="Agregar a Playlist">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-              </svg>
+          <!-- ARTISTAS -->
+          <template v-if="filterCategoryTab === 'artists'">
+            <button 
+              v-for="artist in uniqueArtists" 
+              :key="artist"
+              class="tab-btn"
+              :class="{ active: currentFilterMode === 'artist' && selectedArtist === artist }"
+              @click="setFilter('artist', artist)"
+            >
+              <span>{{ artist }}</span>
             </button>
+          </template>
 
-            <button class="btn-fav-item" @click="toggleFavorite(track.path, $event)">
-              <svg viewBox="0 0 24 24" :fill="isTrackFavorite(track.path) ? '#ef4444' : 'none'" stroke="#ef4444" stroke-width="2">
-                <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
-              </svg>
+          <!-- PLAYLISTS -->
+          <template v-else-if="filterCategoryTab === 'playlists'">
+            <button class="tab-btn btn-new-pl" @click="openCreatePlaylistModal">
+              <span>➕ Nueva</span>
             </button>
+            <button 
+              v-for="pl in playlists" 
+              :key="pl.id"
+              class="tab-btn tab-pl-item"
+              :class="{ active: currentFilterMode === 'playlist' && selectedPlaylistId === pl.id }"
+              @click="setFilter('playlist', pl.id)"
+            >
+              <span>{{ pl.name }}</span>
+              <small>{{ pl.tracks.length }}</small>
+              <span class="btn-del-pl" @click="handleDeletePlaylist(pl.id, $event)">✕</span>
+            </button>
+          </template>
 
-            <div class="bars-anim" v-if="currentTrack.path === track.path">
-              <span></span><span></span><span></span>
+          <!-- GÉNEROS -->
+          <template v-else>
+            <button 
+              v-for="genre in uniqueGenres" 
+              :key="genre"
+              class="tab-btn"
+              :class="{ active: currentFilterMode === 'genre' && selectedGenre === genre }"
+              @click="setFilter('genre', genre)"
+            >
+              <span>{{ genre }}</span>
+            </button>
+          </template>
+        </nav>
+
+        <!-- Cola de Reproducción Priorizada -->
+        <section class="queue-card">
+          <div class="queue-header">
+            <div class="queue-header-left">
+              <h4>COLA DE REPRODUCCIÓN</h4>
+              <span class="queue-count">{{ displayedQueue.length }} pistas indexadas</span>
+            </div>
+
+            <!-- Buscador Integrado -->
+            <div class="search-bar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"></circle>
+                <path d="M21 21l-4.35-4.35"></path>
+              </svg>
+              <input 
+                type="text" 
+                v-model="searchQuery" 
+                placeholder="Buscar pista, artista, álbum o género..." 
+              />
             </div>
           </div>
-        </li>
-      </ul>
-      <div v-else class="empty-msg">No se encontraron pistas.</div>
-    </section>
+
+          <ul v-if="displayedQueue.length > 0" class="track-queue">
+            <li 
+              v-for="(track, index) in displayedQueue" 
+              :key="track.id" 
+              @click="playTrack(track)"
+              :class="{ 
+                'is-active': currentTrack.path === track.path, 
+                'is-top-now': index === 0 && currentTrack.path === track.path 
+              }"
+            >
+              <!-- Info de Pista -->
+              <div class="track-info">
+                <div class="title-row">
+                  <span class="track-name">{{ track.title }}</span>
+                  <span v-if="index === 0 && currentTrack.path === track.path" class="now-badge">
+                    REPRODUCIENDO
+                  </span>
+                </div>
+                <div class="sub-row">
+                  <span class="track-artist-text">{{ track.artist }}</span>
+                  <span v-if="track.album && track.album !== 'MicroSD Audio'" class="track-album-text">• {{ track.album }}</span>
+                  <span v-if="track.genre && track.genre !== 'Varios'" class="track-genre-tag">• {{ track.genre }}</span>
+                </div>
+              </div>
+
+              <!-- Duración en Desktop -->
+              <div class="desktop-duration" v-if="track.duration">
+                <span>{{ formatTime(track.duration) }}</span>
+              </div>
+
+              <!-- Botones de Acción -->
+              <div class="item-actions">
+                <button class="btn-add-pl" @click="openAddToPlaylistModal(track, $event)" title="Agregar a Playlist">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"></line>
+                    <line x1="5" y1="12" x2="19" y2="12"></line>
+                  </svg>
+                </button>
+
+                <button class="btn-fav-item" @click="toggleFavorite(track.path, $event)">
+                  <svg viewBox="0 0 24 24" :fill="isTrackFavorite(track.path) ? '#ef4444' : 'none'" stroke="#ef4444" stroke-width="2">
+                    <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+                  </svg>
+                </button>
+
+                <div class="bars-anim" v-if="currentTrack.path === track.path">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </li>
+          </ul>
+          <div v-else class="empty-msg">No se encontraron pistas con este criterio.</div>
+        </section>
+      </main>
+    </div>
 
     <!-- Modales -->
     <SleepTimerModal 
@@ -631,20 +656,44 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ==========================================================================
+   ESTRUCTURA BASE & LAYOUT RESPONSIVO (MOBILE FIRST)
+   ========================================================================== */
 .app-viewport {
   width: 100%;
-  max-width: 390px;
-  margin: 0 auto;
   min-height: 100vh;
   background-color: #030712;
   color: #f3f4f6;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, sans-serif;
+  box-sizing: border-box;
+}
+
+/* En Móvil (iPhone 12): Ancho centrado a 390px */
+.app-responsive-container {
+  width: 100%;
+  max-width: 390px;
+  margin: 0 auto;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
   padding: max(14px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)) 16px;
   box-sizing: border-box;
+  gap: 12px;
 }
 
+.sidebar-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.main-content-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+/* Header */
 .navbar {
   display: flex;
   justify-content: space-between;
@@ -728,6 +777,7 @@ onUnmounted(() => {
   color: #9ca3af;
 }
 
+/* Category Tabs */
 .category-toggle {
   display: flex;
   background: rgba(17, 24, 39, 0.7);
@@ -754,6 +804,7 @@ onUnmounted(() => {
   color: var(--theme-accent, #38bdf8);
 }
 
+/* Filters Strip */
 .filter-strip {
   display: flex;
   gap: 6px;
@@ -801,13 +852,13 @@ onUnmounted(() => {
 .tab-pl-item { position: relative; padding-right: 24px; }
 .btn-del-pl { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); font-size: 0.6rem; color: #ef4444; }
 
+/* REPRODUCTOR DECK */
 .player-card {
   position: relative;
   overflow: hidden;
   background: #0b0f19;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 24px;
-  margin-bottom: 12px;
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
 }
 
@@ -933,6 +984,7 @@ onUnmounted(() => {
   color: #9ca3af;
 }
 
+/* Timeline */
 .progress-box { margin-bottom: 12px; }
 .progress-track {
   width: 100%;
@@ -968,6 +1020,7 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+/* Controles */
 .controls-deck {
   display: flex;
   justify-content: space-between;
@@ -1059,6 +1112,7 @@ onUnmounted(() => {
 .hw-slider { flex: 1; height: 3px; accent-color: var(--theme-accent, #38bdf8); cursor: pointer; }
 .hw-vol-num { font-size: 0.7rem; font-weight: 800; color: var(--theme-accent, #38bdf8); width: 14px; text-align: right; }
 
+/* Cola Card */
 .queue-card {
   flex: 1;
   background: rgba(17, 24, 39, 0.7);
@@ -1071,11 +1125,11 @@ onUnmounted(() => {
 }
 .queue-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
 }
-.queue-header h4 { margin: 0; font-size: 0.75rem; font-weight: 800; letter-spacing: 0.4px; }
+.queue-header-left h4 { margin: 0; font-size: 0.75rem; font-weight: 800; letter-spacing: 0.4px; }
 .queue-count { font-size: 0.65rem; color: #6b7280; font-weight: 600; }
 
 .search-bar {
@@ -1086,7 +1140,6 @@ onUnmounted(() => {
   border: 1px solid rgba(255, 255, 255, 0.08);
   padding: 6px 10px;
   border-radius: 8px;
-  margin-bottom: 8px;
 }
 .search-bar svg { width: 13px; height: 13px; color: #6b7280; }
 .search-bar input { flex: 1; background: transparent; border: none; color: #f3f4f6; font-size: 0.75rem; outline: none; }
@@ -1161,6 +1214,15 @@ onUnmounted(() => {
 }
 .track-artist-text { font-size: 0.68rem; color: #9ca3af; }
 .track-album-text { font-size: 0.65rem; color: #6b7280; }
+.track-genre-tag { font-size: 0.65rem; color: var(--theme-accent, #38bdf8); font-weight: 600; }
+
+.desktop-duration {
+  display: none;
+  font-size: 0.72rem;
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+  margin-right: 14px;
+}
 
 .item-actions {
   display: flex;
@@ -1205,4 +1267,91 @@ onUnmounted(() => {
 }
 
 .empty-msg { text-align: center; color: #6b7280; font-size: 0.75rem; padding: 14px 0; }
+
+/* ==========================================================================
+   MEDIA QUERY: VERSIÓN ESCRITORIO / PC / TABLET (>= 900px)
+   ========================================================================== */
+@media (min-width: 900px) {
+  .app-responsive-container {
+    max-width: 1350px;
+    padding: 24px 32px;
+    display: grid;
+    grid-template-columns: 380px 1fr;
+    align-items: start;
+    gap: 28px;
+  }
+
+  .sidebar-panel {
+    position: sticky;
+    top: 24px;
+  }
+
+  .player-card {
+    border-radius: 28px;
+  }
+
+  .cover-container {
+    width: 210px;
+    height: 210px;
+    margin: 0 auto 16px auto;
+  }
+
+  .track-title-main {
+    font-size: 1.25rem;
+  }
+
+  .track-artist-main {
+    font-size: 0.95rem;
+  }
+
+  .queue-card {
+    border-radius: 28px;
+    padding: 20px 24px;
+    min-height: 600px;
+  }
+
+  .queue-header {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+  }
+
+  .search-bar {
+    width: 320px;
+    padding: 8px 14px;
+  }
+  .search-bar input {
+    font-size: 0.85rem;
+  }
+
+  .track-queue {
+    max-height: 68vh;
+    gap: 8px;
+  }
+
+  .track-queue li {
+    padding: 12px 16px;
+    border-radius: 12px;
+  }
+  .track-queue li:hover {
+    background: rgba(30, 41, 59, 0.5);
+  }
+
+  .track-name {
+    font-size: 0.9rem;
+  }
+
+  .track-artist-text {
+    font-size: 0.78rem;
+  }
+
+  .track-album-text {
+    font-size: 0.75rem;
+  }
+
+  .desktop-duration {
+    display: block;
+  }
+}
 </style>
