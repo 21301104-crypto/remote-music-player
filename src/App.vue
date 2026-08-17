@@ -24,6 +24,17 @@ const isUploaderModalOpen = ref(false);
 const playlistModalMode = ref('create');
 const selectedTrackForPlaylist = ref(null);
 
+// Toast Notification
+const toastMessage = ref('');
+let toastTimer = null;
+const showToast = (msg) => {
+  if (toastTimer) clearTimeout(toastTimer);
+  toastMessage.value = msg;
+  toastTimer = setTimeout(() => {
+    toastMessage.value = '';
+  }, 2200);
+};
+
 const sleepTimer = ref({ active: false, remainingSeconds: 0 });
 const eqSettings = ref({ enabled: true, preset: 'bass_boost', bands: [] });
 const masterLibrary = ref([]);
@@ -79,6 +90,12 @@ const playTrack = (track) => {
   socket.emit('play_track', track.path);
 };
 
+const playNext = (track, event) => {
+  if (event) event.stopPropagation();
+  socket.emit('play_next', track.path);
+  showToast(`Siguiente: ${track.title}`);
+};
+
 const togglePlay = () => socket.emit('toggle_play');
 const nextTrack = () => { imageError.value = false; socket.emit('next'); };
 const prevTrack = () => { imageError.value = false; socket.emit('prev'); };
@@ -126,7 +143,10 @@ const openAddToPlaylistModal = (track, event) => {
 };
 
 const handleCreatePlaylist = (name) => socket.emit('create_playlist', name);
-const handleAddToPlaylist = ({ playlistId, trackPath }) => socket.emit('add_to_playlist', { playlistId, trackPath });
+const handleAddToPlaylist = ({ playlistId, trackPath }) => {
+  socket.emit('add_to_playlist', { playlistId, trackPath });
+  showToast('Agregada a la playlist');
+};
 const handleDeletePlaylist = (playlistId, event) => {
   if (event) event.stopPropagation();
   socket.emit('delete_playlist', playlistId);
@@ -251,14 +271,23 @@ onUnmounted(() => {
 
 <template>
   <div class="app-viewport" :style="themeStyleObject">
-    <!-- CONTENEDOR GRID RESPONSIVO -->
+    <!-- Toast Feedback Flotante -->
+    <transition name="toast-fade">
+      <div v-if="toastMessage" class="toast-bubble">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+        <span>{{ toastMessage }}</span>
+      </div>
+    </transition>
+
+    <!-- Contenedor Grid Responsivo -->
     <div class="app-responsive-container">
 
       <!-- ================================================================= -->
-      <!-- COLUMNA 1 (IZQUIERDA EN PC / SUPERIOR EN MÓVIL): PLAYER DECK     -->
+      <!-- COLUMNA 1: PLAYER DECK                                            -->
       <!-- ================================================================= -->
       <aside class="sidebar-panel">
-        <!-- Header de la App -->
         <header class="navbar">
           <div class="brand">
             <span class="brand-monogram">HI-FI</span>
@@ -447,10 +476,9 @@ onUnmounted(() => {
       </aside>
 
       <!-- ================================================================= -->
-      <!-- COLUMNA 2 (DERECHA EN PC / INFERIOR EN MÓVIL): EXPLORADOR & COLA -->
+      <!-- COLUMNA 2: EXPLORADOR & COLA                                      -->
       <!-- ================================================================= -->
       <main class="main-content-panel">
-        <!-- Selector de Categorías -->
         <div class="category-toggle">
           <button 
             class="toggle-tab" 
@@ -475,7 +503,6 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <!-- Barra de Filtros Strip -->
         <nav class="filter-strip">
           <button 
             class="tab-btn" 
@@ -543,15 +570,14 @@ onUnmounted(() => {
           </template>
         </nav>
 
-        <!-- Cola de Reproducción Priorizada -->
+        <!-- Cola de Reproducción -->
         <section class="queue-card">
           <div class="queue-header">
             <div class="queue-header-left">
               <h4>COLA DE REPRODUCCIÓN</h4>
-              <span class="queue-count">{{ displayedQueue.length }} pistas indexadas</span>
+              <span class="queue-count">{{ displayedQueue.length }} pistas</span>
             </div>
 
-            <!-- Buscador Integrado -->
             <div class="search-bar">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="11" cy="11" r="8"></circle>
@@ -560,7 +586,7 @@ onUnmounted(() => {
               <input 
                 type="text" 
                 v-model="searchQuery" 
-                placeholder="Buscar pista, artista, álbum o género..." 
+                placeholder="Buscar pista, artista o álbum..." 
               />
             </div>
           </div>
@@ -575,7 +601,6 @@ onUnmounted(() => {
                 'is-top-now': index === 0 && currentTrack.path === track.path 
               }"
             >
-              <!-- Info de Pista -->
               <div class="track-info">
                 <div class="title-row">
                   <span class="track-name">{{ track.title }}</span>
@@ -590,13 +615,26 @@ onUnmounted(() => {
                 </div>
               </div>
 
-              <!-- Duración en Desktop -->
               <div class="desktop-duration" v-if="track.duration">
                 <span>{{ formatTime(track.duration) }}</span>
               </div>
 
-              <!-- Botones de Acción -->
               <div class="item-actions">
+                <!-- Botón: REPRODUCIR A CONTINUACIÓN (Play Next) -->
+                <button 
+                  class="btn-play-next" 
+                  @click="playNext(track, $event)"
+                  title="Reproducir a continuación"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="5" y1="6" x2="19" y2="6"></line>
+                    <line x1="5" y1="12" x2="13" y2="12"></line>
+                    <line x1="5" y1="18" x2="13" y2="18"></line>
+                    <polyline points="16 10 19 13 16 16"></polyline>
+                  </svg>
+                </button>
+
+                <!-- Botón: AGREGAR A PLAYLIST -->
                 <button class="btn-add-pl" @click="openAddToPlaylistModal(track, $event)" title="Agregar a Playlist">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -604,6 +642,7 @@ onUnmounted(() => {
                   </svg>
                 </button>
 
+                <!-- Botón: FAVORITOS -->
                 <button class="btn-fav-item" @click="toggleFavorite(track.path, $event)">
                   <svg viewBox="0 0 24 24" :fill="isTrackFavorite(track.path) ? '#ef4444' : 'none'" stroke="#ef4444" stroke-width="2">
                     <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
@@ -656,10 +695,8 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* ==========================================================================
-   ESTRUCTURA BASE & LAYOUT RESPONSIVO (MOBILE FIRST)
-   ========================================================================== */
 .app-viewport {
+  position: relative;
   width: 100%;
   min-height: 100vh;
   background-color: #030712;
@@ -668,7 +705,43 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 
-/* En Móvil (iPhone 12): Ancho centrado a 390px */
+/* Toast Bubble */
+.toast-bubble {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.95);
+  border: 1px solid var(--theme-accent, #38bdf8);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+  padding: 8px 16px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 300;
+  pointer-events: none;
+}
+.toast-bubble svg {
+  width: 16px;
+  height: 16px;
+  color: var(--theme-accent, #38bdf8);
+}
+.toast-bubble span {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #f8fafc;
+  white-space: nowrap;
+}
+.toast-fade-enter-active, .toast-fade-leave-active {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.toast-fade-enter-from, .toast-fade-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -15px);
+}
+
+/* Layout Responsivo */
 .app-responsive-container {
   width: 100%;
   max-width: 390px;
@@ -693,7 +766,7 @@ onUnmounted(() => {
   min-width: 0;
 }
 
-/* Header */
+/* Navbar */
 .navbar {
   display: flex;
   justify-content: space-between;
@@ -852,7 +925,7 @@ onUnmounted(() => {
 .tab-pl-item { position: relative; padding-right: 24px; }
 .btn-del-pl { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); font-size: 0.6rem; color: #ef4444; }
 
-/* REPRODUCTOR DECK */
+/* Reproductor Deck */
 .player-card {
   position: relative;
   overflow: hidden;
@@ -1229,6 +1302,25 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
 }
+
+/* Botón Reproducir a Continuación */
+.btn-play-next {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s ease, transform 0.1s ease;
+}
+.btn-play-next:hover, .btn-play-next:active {
+  color: var(--theme-accent, #38bdf8);
+  transform: scale(1.15);
+}
+.btn-play-next svg { width: 15px; height: 15px; }
+
 .btn-add-pl {
   background: transparent;
   border: none;
@@ -1269,7 +1361,7 @@ onUnmounted(() => {
 .empty-msg { text-align: center; color: #6b7280; font-size: 0.75rem; padding: 14px 0; }
 
 /* ==========================================================================
-   MEDIA QUERY: VERSIÓN ESCRITORIO / PC / TABLET (>= 900px)
+   DESKTOP STUDIO LAYOUT (>= 900px)
    ========================================================================== */
 @media (min-width: 900px) {
   .app-responsive-container {

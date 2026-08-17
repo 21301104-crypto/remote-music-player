@@ -21,7 +21,9 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('dist'));
 
-// Configuración de Rutas y Almacenamiento
+// =========================================================================
+// CONFIGURACIÓN DE RUTAS Y ALMACENAMIENTO
+// =========================================================================
 const MUSIC_DIR = '/storage/9C33-6BBD/Music';
 const DATA_DIR = path.resolve('data');
 const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
@@ -706,6 +708,26 @@ io.on('connection', (socket) => {
       rebuildQueue(targetPath);
     }
     playCurrentTrack();
+  });
+
+  // --- REPRODUCIR A CONTINUACIÓN (PLAY NEXT) ---
+  socket.on('play_next', (targetPath) => {
+    const trackObj = masterLibrary.find(t => t.path === targetPath);
+    if (!trackObj) return;
+
+    if (activeQueue.length === 0) {
+      activeQueue = [trackObj];
+      currentIndex = 0;
+    } else {
+      const futureIdx = activeQueue.findIndex((t, idx) => t.path === targetPath && idx > currentIndex);
+      if (futureIdx !== -1) {
+        activeQueue.splice(futureIdx, 1);
+      }
+      activeQueue.splice(currentIndex + 1, 0, trackObj);
+    }
+
+    console.log(`⏭️ [Play Next] "${trackObj.title}" programada para sonar después.`);
+    broadcastState();
   });
 
   socket.on('toggle_play', () => {
