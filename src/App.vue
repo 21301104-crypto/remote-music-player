@@ -9,13 +9,14 @@ import EqualizerModal from './components/EqualizerModal.vue';
 import UploaderModal from './components/UploaderModal.vue';
 import LyricsModal from './components/LyricsModal.vue';
 
+// 1. Conexión Backend
 const BACKEND_URL = import.meta.env.DEV
   ? `http://${window.location.hostname}:3000`
   : window.location.origin;
 
 const socket = io(BACKEND_URL);
 
-// Estados
+// 2. Estados Reactivos del Sistema
 const isConnected = ref(false);
 const isSleepTimerModalOpen = ref(false);
 const isPlaylistModalOpen = ref(false);
@@ -25,7 +26,6 @@ const isLyricsModalOpen = ref(false);
 
 const currentLyricsData = ref(null);
 const lyricsSyncProgress = ref(null);
-
 const playlistModalMode = ref('create');
 const selectedTrackForPlaylist = ref(null);
 
@@ -38,6 +38,7 @@ const showToast = (msg) => {
   toastTimer = setTimeout(() => { toastMessage.value = ''; }, 2200);
 };
 
+// Configuración & Catálogo
 const sleepTimer = ref({ active: false, remainingSeconds: 0 });
 const eqSettings = ref({ enabled: true, preset: 'bass_boost', bands: [] });
 const masterLibrary = ref([]);
@@ -50,6 +51,7 @@ const selectedGenre = ref(null);
 const selectedPlaylistId = ref(null);
 const filterCategoryTab = ref('artists');
 
+// Pista Activa
 const currentTrack = ref({
   path: null,
   title: null,
@@ -61,11 +63,16 @@ const currentTrack = ref({
 
 const isPlaying = ref(false);
 const isShuffle = ref(false);
-const repeatMode = ref('all');
+const repeatMode = ref('all'); // 'off' | 'all' | 'one'
 const volume = ref(10);
-const searchQuery = ref('');
 const imageError = ref(false);
 
+// Búsqueda Inteligente (Opción 3)
+const searchQuery = ref('');
+const searchResults = ref(null);
+const isSearching = ref(false);
+
+// Color Extraction Engine
 const { currentPalette, extractColorsFromImage } = useColorExtractor();
 
 const themeStyleObject = computed(() => ({
@@ -87,7 +94,7 @@ const coverUrl = computed(() => {
 
 const handleImageError = () => { imageError.value = true; };
 
-// Acciones de Control
+// 3. Control de Transporte y Reproducción
 const playTrack = (track) => {
   imageError.value = false;
   socket.emit('play_track', track.path);
@@ -104,19 +111,16 @@ const nextTrack = () => { imageError.value = false; socket.emit('next'); };
 const prevTrack = () => { imageError.value = false; socket.emit('prev'); };
 const toggleShuffle = () => socket.emit('toggle_shuffle');
 const toggleRepeat = () => socket.emit('toggle_repeat');
-const seekAudio = (targetSeconds) => socket.emit('seek_audio', targetSeconds);
+const seekAudio = (targetSec) => socket.emit('seek_audio', targetSec);
 
 const setFilter = (mode, param = null) => {
   imageError.value = false;
-  if (mode === 'artist') {
-    socket.emit('set_filter', { mode: 'artist', artist: param });
-  } else if (mode === 'genre') {
-    socket.emit('set_filter', { mode: 'genre', genre: param });
-  } else if (mode === 'playlist') {
-    socket.emit('set_filter', { mode: 'playlist', playlistId: param });
-  } else {
-    socket.emit('set_filter', { mode });
-  }
+  searchQuery.value = '';
+  searchResults.value = null;
+  if (mode === 'artist') socket.emit('set_filter', { mode: 'artist', artist: param });
+  else if (mode === 'genre') socket.emit('set_filter', { mode: 'genre', genre: param });
+  else if (mode === 'playlist') socket.emit('set_filter', { mode: 'playlist', playlistId: param });
+  else socket.emit('set_filter', { mode });
 };
 
 const toggleFavorite = (trackPath, event) => {
@@ -124,25 +128,21 @@ const toggleFavorite = (trackPath, event) => {
   socket.emit('toggle_favorite', trackPath);
 };
 
-const changeVolume = () => {
-  socket.emit('set_volume', volume.value);
-};
+const changeVolume = () => socket.emit('set_volume', volume.value);
 
-// Modales & Letras
+// 4. Modales y Sincronización
 const setSleepTimer = (minutes) => socket.emit('set_sleep_timer', minutes);
 const cancelSleepTimer = () => socket.emit('cancel_sleep_timer');
 const handleUpdateEq = (newEq) => socket.emit('set_eq', newEq);
 
 const openLyricsModal = () => {
-  if (currentTrack.value.path) {
-    socket.emit('get_lyrics', currentTrack.value.path);
-  }
+  if (currentTrack.value.path) socket.emit('get_lyrics', currentTrack.value.path);
   isLyricsModalOpen.value = true;
 };
 
 const startBulkSync = () => {
   socket.emit('start_bulk_lyrics_sync');
-  showToast('Iniciando descarga de letras...');
+  showToast('Sincronizando letras...');
 };
 
 const openCreatePlaylistModal = () => {
@@ -161,13 +161,40 @@ const openAddToPlaylistModal = (track, event) => {
 const handleCreatePlaylist = (name) => socket.emit('create_playlist', name);
 const handleAddToPlaylist = ({ playlistId, trackPath }) => {
   socket.emit('add_to_playlist', { playlistId, trackPath });
-  showToast('Agregada a la playlist');
+  showToast('Pista agregada a la playlist');
 };
 const handleDeletePlaylist = (playlistId, event) => {
   if (event) event.stopPropagation();
   socket.emit('delete_playlist', playlistId);
 };
 
+// 5. Búsqueda Reactiva con Debounce hacia el Endpoint SQLite /api/search
+let searchDebounceTimer = null;
+watch(searchQuery, (newVal) => {
+  if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+
+  if (!newVal || !newVal.trim()) {
+    searchResults.value = null;
+    isSearching.value = false;
+    return;
+  }
+
+  isSearching.value = true;
+  searchDebounceTimer = setTimeout(async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(newVal.trim())}`);
+      if (res.ok) {
+        searchResults.value = await res.json();
+      }
+    } catch (e) {
+      searchResults.value = null;
+    } finally {
+      isSearching.value = false;
+    }
+  }, 180);
+});
+
+// 6. Formateadores y Computadas
 const formatTime = (seconds) => {
   if (!seconds || isNaN(seconds) || seconds < 0) return '0:00';
   const mins = Math.floor(seconds / 60);
@@ -184,39 +211,27 @@ const formatShortTimer = (seconds) => {
 
 const progressPercent = computed(() => {
   if (!currentTrack.value.duration || currentTrack.value.duration === 0) return 0;
-  const pct = (currentTime.value / currentTrack.value.duration) * 100;
-  return Math.min(Math.max(pct, 0), 100);
+  return Math.min(Math.max((currentTime.value / currentTrack.value.duration) * 100, 0), 100);
 });
 
 const isTrackFavorite = (path) => favorites.value.includes(path);
 
 const uniqueArtists = computed(() => {
-  const list = masterLibrary.value
-    .map(t => t.artist)
-    .filter(a => a && a !== 'Varios' && !/^\d+$/.test(a.trim()));
+  const list = masterLibrary.value.map(t => t.artist).filter(a => a && a !== 'Varios' && !/^\d+$/.test(a.trim()));
   return [...new Set(list)].sort((a, b) => a.localeCompare(b));
 });
 
 const uniqueGenres = computed(() => {
-  const list = masterLibrary.value
-    .map(t => t.genre)
-    .filter(g => g && g !== 'Varios' && !/^\d+$/.test(g.trim()));
+  const list = masterLibrary.value.map(t => t.genre).filter(g => g && g !== 'Varios' && !/^\d+$/.test(g.trim()));
   return [...new Set(list)].sort((a, b) => a.localeCompare(b));
 });
 
 const displayedQueue = computed(() => {
-  let list = queue.value;
-
-  if (searchQuery.value.trim()) {
-    const q = searchQuery.value.toLowerCase();
-    list = list.filter(track =>
-      track.title.toLowerCase().includes(q) ||
-      track.artist.toLowerCase().includes(q) ||
-      (track.album && track.album.toLowerCase().includes(q)) ||
-      (track.genre && track.genre.toLowerCase().includes(q))
-    );
+  if (searchResults.value !== null) {
+    return searchResults.value;
   }
 
+  let list = queue.value;
   if (!currentTrack.value.path || list.length <= 1) return list;
 
   const activeIndex = list.findIndex(t => t.path === currentTrack.value.path);
@@ -231,22 +246,19 @@ watch(coverUrl, (newUrl) => {
   if (newUrl) extractColorsFromImage(newUrl);
 });
 
-// Pedir letras cuando cambia la pista y el modal está abierto
 watch(() => currentTrack.value.path, (newPath) => {
   if (newPath && isLyricsModalOpen.value) {
     socket.emit('get_lyrics', newPath);
   }
 });
 
+// 7. Ciclo de Vida
 const startProgressTicker = () => {
   if (progressInterval) clearInterval(progressInterval);
   progressInterval = setInterval(() => {
     if (isPlaying.value && playStartTime.value > 0) {
       const liveSeconds = (Date.now() - playStartTime.value) / 1000;
-      currentTime.value = Math.min(
-        elapsedOffset.value + liveSeconds,
-        currentTrack.value.duration || Infinity
-      );
+      currentTime.value = Math.min(elapsedOffset.value + liveSeconds, currentTrack.value.duration || Infinity);
     } else {
       currentTime.value = elapsedOffset.value;
     }
@@ -255,7 +267,6 @@ const startProgressTicker = () => {
 
 onMounted(() => {
   startProgressTicker();
-
   socket.on('connect', () => { isConnected.value = true; });
   socket.on('disconnect', () => { isConnected.value = false; });
 
@@ -287,9 +298,7 @@ onMounted(() => {
   });
 
   socket.on('lyrics_data', (data) => {
-    if (data.trackPath === currentTrack.value.path) {
-      currentLyricsData.value = data;
-    }
+    if (data.trackPath === currentTrack.value.path) currentLyricsData.value = data;
   });
 
   socket.on('lyrics_sync_progress', (progress) => {
@@ -298,10 +307,8 @@ onMounted(() => {
 
   socket.on('lyrics_sync_completed', ({ found, total }) => {
     lyricsSyncProgress.value = { percentage: 100, processed: total, total };
-    showToast(`¡Listo! ${found} letras guardadas en SQLite`);
-    if (currentTrack.value.path) {
-      socket.emit('get_lyrics', currentTrack.value.path);
-    }
+    showToast(`Completado: ${found} letras en SQLite`);
+    if (currentTrack.value.path) socket.emit('get_lyrics', currentTrack.value.path);
   });
 });
 
@@ -312,7 +319,7 @@ onUnmounted(() => {
 
 <template>
   <div class="app-viewport" :style="themeStyleObject">
-    <!-- Toast Feedback Flotante -->
+    <!-- Toast Flotante -->
     <transition name="toast-fade">
       <div v-if="toastMessage" class="toast-bubble">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -322,11 +329,9 @@ onUnmounted(() => {
       </div>
     </transition>
 
-    <!-- Contenedor Grid Responsivo -->
     <div class="app-responsive-container">
-
       <!-- ================================================================= -->
-      <!-- COLUMNA 1: PLAYER DECK                                            -->
+      <!-- COLUMNA 1: REPRODUCTOR PRINCIPAL (DECK)                           -->
       <!-- ================================================================= -->
       <aside class="sidebar-panel">
         <header class="navbar">
@@ -336,12 +341,7 @@ onUnmounted(() => {
           </div>
 
           <div class="header-actions">
-            <!-- Botón Letras Sincronizadas (Karaoke) -->
-            <button 
-              class="btn-header-icon" 
-              @click="openLyricsModal"
-              title="Letras en vivo"
-            >
+            <button class="btn-header-icon" @click="openLyricsModal" title="Letras en vivo">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                 <line x1="9" y1="9" x2="15" y2="9"></line>
@@ -349,12 +349,7 @@ onUnmounted(() => {
               </svg>
             </button>
 
-            <!-- Botón Web Uploader -->
-            <button 
-              class="btn-header-icon" 
-              @click="isUploaderModalOpen = true"
-              title="Subir canciones a la MicroSD"
-            >
+            <button class="btn-header-icon" @click="isUploaderModalOpen = true" title="Subir a MicroSD">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
                 <polyline points="17 8 12 3 7 8"></polyline>
@@ -362,13 +357,7 @@ onUnmounted(() => {
               </svg>
             </button>
 
-            <!-- Botón Ecualizador DSP -->
-            <button 
-              class="btn-header-icon" 
-              :class="{ active: eqSettings.enabled }"
-              @click="isEqualizerModalOpen = true"
-              title="Ecualizador DSP"
-            >
+            <button class="btn-header-icon" :class="{ active: eqSettings.enabled }" @click="isEqualizerModalOpen = true" title="Ecualizador DSP">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <line x1="4" y1="21" x2="4" y2="14"></line>
                 <line x1="4" y1="10" x2="4" y2="3"></line>
@@ -379,13 +368,7 @@ onUnmounted(() => {
               </svg>
             </button>
 
-            <!-- Botón Sleep Timer -->
-            <button 
-              class="btn-header-icon" 
-              :class="{ active: sleepTimer.active }"
-              @click="isSleepTimerModalOpen = true"
-              title="Sleep Timer"
-            >
+            <button class="btn-header-icon" :class="{ active: sleepTimer.active }" @click="isSleepTimerModalOpen = true" title="Sleep Timer">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
               </svg>
@@ -399,7 +382,6 @@ onUnmounted(() => {
           </div>
         </header>
 
-        <!-- Tarjeta del Reproductor Principal con Cover Blur -->
         <section class="player-card">
           <div class="card-blur-backdrop" v-if="coverUrl">
             <img :src="coverUrl" alt="" class="card-blur-img" />
@@ -424,14 +406,8 @@ onUnmounted(() => {
               </button>
             </div>
 
-            <div class="cover-container" @click="openLyricsModal" style="cursor: pointer;" title="Toca para ver letras">
-              <img 
-                v-if="coverUrl" 
-                :src="coverUrl" 
-                alt="Cover" 
-                class="cover-art"
-                @error="handleImageError"
-              />
+            <div class="cover-container" @click="openLyricsModal" title="Toca para ver letras">
+              <img v-if="coverUrl" :src="coverUrl" alt="Cover" class="cover-art" @error="handleImageError" />
               <div v-else class="cover-fallback">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                   <circle cx="12" cy="12" r="10"></circle>
@@ -440,16 +416,15 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Metadatos ID3 -->
             <div class="track-meta-center">
               <h3 class="track-title-main">{{ currentTrack.title || 'Pista no seleccionada' }}</h3>
               <p class="track-artist-main">{{ currentTrack.artist || 'Elige una canción' }}</p>
               <span v-if="currentTrack.album" class="track-album-main">{{ currentTrack.album }}</span>
             </div>
 
-            <!-- Barra de Progreso -->
+            <!-- Barra de Progreso con Soporte para Scrubbing / Seek -->
             <div class="progress-box">
-              <div class="progress-track">
+              <div class="progress-track" @click="seekAudio(($event.offsetX / $event.currentTarget.offsetWidth) * currentTrack.duration)">
                 <div class="progress-fill" :style="{ width: `${progressPercent}%` }">
                   <div class="progress-thumb"></div>
                 </div>
@@ -460,14 +435,9 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Botonera -->
+            <!-- Botonera de Control -->
             <div class="controls-deck">
-              <button 
-                class="btn-deck-action" 
-                :class="{ active: isShuffle }" 
-                @click="toggleShuffle"
-                title="Modo Aleatorio"
-              >
+              <button class="btn-deck-action" :class="{ active: isShuffle }" @click="toggleShuffle" title="Aleatorio">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <path d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/>
                 </svg>
@@ -494,12 +464,7 @@ onUnmounted(() => {
                 </svg>
               </button>
 
-              <button 
-                class="btn-deck-action btn-repeat" 
-                :class="{ active: repeatMode !== 'off' }" 
-                @click="toggleRepeat"
-                :title="`Modo Repetir: ${repeatMode}`"
-              >
+              <button class="btn-deck-action btn-repeat" :class="{ active: repeatMode !== 'off' }" @click="toggleRepeat" :title="`Repetir: ${repeatMode}`">
                 <div class="repeat-icon-box">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polyline points="17 1 21 5 17 9"></polyline>
@@ -512,17 +477,9 @@ onUnmounted(() => {
               </button>
             </div>
 
-            <!-- Hardware Volume -->
             <div class="hardware-volume">
               <span class="vol-label">VOL</span>
-              <input 
-                type="range" 
-                min="0" 
-                max="15" 
-                v-model.number="volume" 
-                @input="changeVolume"
-                class="hw-slider"
-              />
+              <input type="range" min="0" max="15" v-model.number="volume" @input="changeVolume" class="hw-slider" />
               <span class="hw-vol-num">{{ volume }}</span>
             </div>
           </div>
@@ -530,48 +487,28 @@ onUnmounted(() => {
       </aside>
 
       <!-- ================================================================= -->
-      <!-- COLUMNA 2: EXPLORADOR & COLA                                      -->
+      <!-- COLUMNA 2: EXPLORADOR, CATEGORÍAS Y BÚSQUEDA INTELIGENTE          -->
       <!-- ================================================================= -->
       <main class="main-content-panel">
         <div class="category-toggle">
-          <button 
-            class="toggle-tab" 
-            :class="{ active: filterCategoryTab === 'artists' }" 
-            @click="filterCategoryTab = 'artists'"
-          >
+          <button class="toggle-tab" :class="{ active: filterCategoryTab === 'artists' }" @click="filterCategoryTab = 'artists'">
             ARTISTAS ({{ uniqueArtists.length }})
           </button>
-          <button 
-            class="toggle-tab" 
-            :class="{ active: filterCategoryTab === 'playlists' }" 
-            @click="filterCategoryTab = 'playlists'"
-          >
+          <button class="toggle-tab" :class="{ active: filterCategoryTab === 'playlists' }" @click="filterCategoryTab = 'playlists'">
             PLAYLISTS ({{ playlists.length }})
           </button>
-          <button 
-            class="toggle-tab" 
-            :class="{ active: filterCategoryTab === 'genres' }" 
-            @click="filterCategoryTab = 'genres'"
-          >
+          <button class="toggle-tab" :class="{ active: filterCategoryTab === 'genres' }" @click="filterCategoryTab = 'genres'">
             GÉNEROS ({{ uniqueGenres.length }})
           </button>
         </div>
 
         <nav class="filter-strip">
-          <button 
-            class="tab-btn" 
-            :class="{ active: currentFilterMode === 'all' }" 
-            @click="setFilter('all')"
-          >
+          <button class="tab-btn" :class="{ active: currentFilterMode === 'all' && !searchQuery }" @click="setFilter('all')">
             <span>Todos</span>
             <small>{{ masterLibrary.length }}</small>
           </button>
 
-          <button 
-            class="tab-btn tab-fav" 
-            :class="{ active: currentFilterMode === 'favorites' }" 
-            @click="setFilter('favorites')"
-          >
+          <button class="tab-btn tab-fav" :class="{ active: currentFilterMode === 'favorites' && !searchQuery }" @click="setFilter('favorites')">
             <svg class="tab-fav-icon" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
             </svg>
@@ -579,56 +516,34 @@ onUnmounted(() => {
             <small>{{ favorites.length }}</small>
           </button>
 
-          <!-- ARTISTAS -->
           <template v-if="filterCategoryTab === 'artists'">
-            <button 
-              v-for="artist in uniqueArtists" 
-              :key="artist"
-              class="tab-btn"
-              :class="{ active: currentFilterMode === 'artist' && selectedArtist === artist }"
-              @click="setFilter('artist', artist)"
-            >
+            <button v-for="artist in uniqueArtists" :key="artist" class="tab-btn" :class="{ active: currentFilterMode === 'artist' && selectedArtist === artist && !searchQuery }" @click="setFilter('artist', artist)">
               <span>{{ artist }}</span>
             </button>
           </template>
 
-          <!-- PLAYLISTS -->
           <template v-else-if="filterCategoryTab === 'playlists'">
             <button class="tab-btn btn-new-pl" @click="openCreatePlaylistModal">
               <span>➕ Nueva</span>
             </button>
-            <button 
-              v-for="pl in playlists" 
-              :key="pl.id"
-              class="tab-btn tab-pl-item"
-              :class="{ active: currentFilterMode === 'playlist' && selectedPlaylistId === pl.id }"
-              @click="setFilter('playlist', pl.id)"
-            >
+            <button v-for="pl in playlists" :key="pl.id" class="tab-btn tab-pl-item" :class="{ active: currentFilterMode === 'playlist' && selectedPlaylistId === pl.id && !searchQuery }" @click="setFilter('playlist', pl.id)">
               <span>{{ pl.name }}</span>
               <small>{{ pl.tracks.length }}</small>
               <span class="btn-del-pl" @click="handleDeletePlaylist(pl.id, $event)">✕</span>
             </button>
           </template>
 
-          <!-- GÉNEROS -->
           <template v-else>
-            <button 
-              v-for="genre in uniqueGenres" 
-              :key="genre"
-              class="tab-btn"
-              :class="{ active: currentFilterMode === 'genre' && selectedGenre === genre }"
-              @click="setFilter('genre', genre)"
-            >
+            <button v-for="genre in uniqueGenres" :key="genre" class="tab-btn" :class="{ active: currentFilterMode === 'genre' && selectedGenre === genre && !searchQuery }" @click="setFilter('genre', genre)">
               <span>{{ genre }}</span>
             </button>
           </template>
         </nav>
 
-        <!-- Cola de Reproducción -->
         <section class="queue-card">
           <div class="queue-header">
             <div class="queue-header-left">
-              <h4>COLA DE REPRODUCCIÓN</h4>
+              <h4>{{ searchResults !== null ? 'RESULTADOS DE BÚSQUEDA INTELIGENTE' : 'COLA DE REPRODUCCIÓN' }}</h4>
               <span class="queue-count">{{ displayedQueue.length }} pistas</span>
             </div>
 
@@ -640,8 +555,9 @@ onUnmounted(() => {
               <input 
                 type="text" 
                 v-model="searchQuery" 
-                placeholder="Buscar pista, artista o álbum..." 
+                placeholder="Buscar por título, artista o frases de letras..." 
               />
+              <span v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''">✕</span>
             </div>
           </div>
 
@@ -652,13 +568,13 @@ onUnmounted(() => {
               @click="playTrack(track)"
               :class="{ 
                 'is-active': currentTrack.path === track.path, 
-                'is-top-now': index === 0 && currentTrack.path === track.path 
+                'is-top-now': index === 0 && currentTrack.path === track.path && searchResults === null 
               }"
             >
               <div class="track-info">
                 <div class="title-row">
                   <span class="track-name">{{ track.title }}</span>
-                  <span v-if="index === 0 && currentTrack.path === track.path" class="now-badge">
+                  <span v-if="index === 0 && currentTrack.path === track.path && searchResults === null" class="now-badge">
                     REPRODUCIENDO
                   </span>
                 </div>
@@ -667,6 +583,14 @@ onUnmounted(() => {
                   <span v-if="track.album && track.album !== 'MicroSD Audio'" class="track-album-text">• {{ track.album }}</span>
                   <span v-if="track.genre && track.genre !== 'Varios'" class="track-genre-tag">• {{ track.genre }}</span>
                 </div>
+
+                <!-- Fragmento Coincidente en Letras (Opción 3) -->
+                <div v-if="track.matched_snippet" class="lyrics-match-badge">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                  </svg>
+                  <span>"{{ track.matched_snippet }}"</span>
+                </div>
               </div>
 
               <div class="desktop-duration" v-if="track.duration">
@@ -674,11 +598,7 @@ onUnmounted(() => {
               </div>
 
               <div class="item-actions">
-                <button 
-                  class="btn-play-next" 
-                  @click="playNext(track, $event)"
-                  title="Reproducir a continuación"
-                >
+                <button class="btn-play-next" @click="playNext(track, $event)" title="Reproducir a continuación">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="5" y1="6" x2="19" y2="6"></line>
                     <line x1="5" y1="12" x2="13" y2="12"></line>
@@ -711,7 +631,7 @@ onUnmounted(() => {
       </main>
     </div>
 
-    <!-- Modales -->
+    <!-- Modales Globales -->
     <SleepTimerModal 
       :is-open="isSleepTimerModalOpen"
       :sleep-timer="sleepTimer"
@@ -743,7 +663,6 @@ onUnmounted(() => {
       @close="isUploaderModalOpen = false"
     />
 
-    <!-- MODAL DE LETRAS EN VIVO (ESTILO APPLE MUSIC) -->
     <LyricsModal
       :is-open="isLyricsModalOpen"
       :current-track="currentTrack"
@@ -972,7 +891,7 @@ onUnmounted(() => {
 }
 .fav-deck-btn svg { width: 16px; height: 16px; }
 
-.cover-container { width: 165px; height: 165px; margin: 0 auto 12px auto; }
+.cover-container { width: 175px; height: 175px; margin: 0 auto 14px auto; }
 .cover-art {
   width: 100%;
   height: 100%;
@@ -1012,27 +931,28 @@ onUnmounted(() => {
 }
 .track-album-main { font-size: 0.7rem; color: #9ca3af; }
 
-.progress-box { margin-bottom: 12px; }
+.progress-box { margin-bottom: 14px; }
 .progress-track {
   width: 100%;
-  height: 4px;
+  height: 5px;
   background: rgba(255, 255, 255, 0.15);
-  border-radius: 2px;
+  border-radius: 3px;
   position: relative;
+  cursor: pointer;
 }
 .progress-fill {
   height: 100%;
   background: var(--theme-accent, #38bdf8);
-  border-radius: 2px;
+  border-radius: 3px;
   position: relative;
   transition: width 0.25s linear;
 }
 .progress-thumb {
   position: absolute;
-  right: -3px;
-  top: -3px;
-  width: 10px;
-  height: 10px;
+  right: -4px;
+  top: -3.5px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: #ffffff;
   box-shadow: 0 0 6px rgba(0,0,0,0.5);
@@ -1051,7 +971,7 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   padding: 0 4px;
 }
 .btn-deck-action {
@@ -1100,8 +1020,8 @@ onUnmounted(() => {
 .btn-deck-skip svg { width: 18px; height: 18px; }
 
 .btn-deck-play {
-  width: 56px;
-  height: 56px;
+  width: 58px;
+  height: 58px;
   border-radius: 50%;
   border: none;
   background: var(--theme-accent, #38bdf8);
@@ -1112,7 +1032,7 @@ onUnmounted(() => {
   cursor: pointer;
   box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
 }
-.btn-deck-play svg { width: 24px; height: 24px; }
+.btn-deck-play svg { width: 26px; height: 26px; }
 
 .hardware-volume {
   display: flex;
@@ -1157,6 +1077,7 @@ onUnmounted(() => {
 }
 .search-bar svg { width: 13px; height: 13px; color: #6b7280; }
 .search-bar input { flex: 1; background: transparent; border: none; color: #f3f4f6; font-size: 0.75rem; outline: none; }
+.clear-search-btn { font-size: 0.7rem; color: #94a3b8; cursor: pointer; padding: 2px; }
 
 .track-queue {
   list-style: none;
@@ -1166,7 +1087,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  max-height: 25vh;
+  max-height: 28vh;
 }
 .track-queue li {
   background: rgba(11, 15, 25, 0.5);
@@ -1183,9 +1104,7 @@ onUnmounted(() => {
   border-color: var(--theme-accent, #38bdf8);
   background: rgba(255, 255, 255, 0.05);
 }
-.track-queue li.is-top-now {
-  background: rgba(56, 189, 248, 0.08);
-}
+.track-queue li.is-top-now { background: rgba(56, 189, 248, 0.08); }
 
 .track-info {
   display: flex;
@@ -1219,6 +1138,26 @@ onUnmounted(() => {
 .track-album-text { font-size: 0.65rem; color: #6b7280; }
 .track-genre-tag { font-size: 0.65rem; color: var(--theme-accent, #38bdf8); font-weight: 600; }
 
+.lyrics-match-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  background: rgba(56, 189, 248, 0.1);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border-left: 2px solid var(--theme-accent, #38bdf8);
+}
+.lyrics-match-badge svg { width: 11px; height: 11px; color: var(--theme-accent, #38bdf8); flex-shrink: 0; }
+.lyrics-match-badge span {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .desktop-duration {
   display: none;
   font-size: 0.72rem;
@@ -1228,7 +1167,6 @@ onUnmounted(() => {
 }
 
 .item-actions { display: flex; align-items: center; gap: 6px; }
-
 .btn-play-next {
   background: transparent;
   border: none;
@@ -1278,7 +1216,7 @@ onUnmounted(() => {
 
   .sidebar-panel { position: sticky; top: 24px; }
   .player-card { border-radius: 28px; }
-  .cover-container { width: 210px; height: 210px; margin: 0 auto 16px auto; }
+  .cover-container { width: 220px; height: 220px; margin: 0 auto 16px auto; }
   .track-title-main { font-size: 1.25rem; }
   .track-artist-main { font-size: 0.95rem; }
 

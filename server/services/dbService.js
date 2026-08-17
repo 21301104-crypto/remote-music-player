@@ -1,16 +1,12 @@
-// server/database.js
+// server/services/dbService.js
 import initSqlJs from 'sql.js';
-import path from 'path';
 import fs from 'fs';
-
-const DATA_DIR = path.resolve('data');
-const DB_PATH = path.join(DATA_DIR, 'music.db');
+import { DATA_DIR, DB_PATH } from '../config/constants.js';
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-// 1. Inicialización del Motor SQLite WebAssembly (WASM)
 const SQL = await initSqlJs();
 let db;
 
@@ -18,27 +14,25 @@ if (fs.existsSync(DB_PATH)) {
   try {
     const filebuffer = fs.readFileSync(DB_PATH);
     db = new SQL.Database(filebuffer);
-    console.log('📦 [SQLite WASM] Base de datos existente cargada desde disco.');
+    console.log('📦 [SQLite Core] Base de datos cargada desde disco.');
   } catch (e) {
-    console.error('[DB Load Error] Creando nueva base de datos:', e.message);
     db = new SQL.Database();
   }
 } else {
   db = new SQL.Database();
-  console.log('📦 [SQLite WASM] Nueva base de datos inicializada.');
+  console.log('📦 [SQLite Core] Nueva base de datos inicializada.');
 }
 
 const saveDb = () => {
   try {
     const data = db.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(DB_PATH, buffer);
+    fs.writeFileSync(DB_PATH, Buffer.from(data));
   } catch (err) {
     console.error('[DB Save Error]:', err.message);
   }
 };
 
-// 2. Creación del Esquema Relacional e Índices
+// Inicialización de Esquema e Índices
 db.run(`
   CREATE TABLE IF NOT EXISTS tracks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,7 +73,6 @@ db.run(`
     value TEXT NOT NULL
   );
 
-  -- TABLA DE LETRAS OFFLINE (CACHÉ PERMANENTE)
   CREATE TABLE IF NOT EXISTS lyrics (
     track_path TEXT PRIMARY KEY,
     plain_lyrics TEXT,
@@ -92,94 +85,8 @@ db.run(`
 `);
 saveDb();
 
-// 3. Migración Automática de Archivos JSON Previos
-const migrateOldJSONFiles = () => {
-  const CACHE_FILE = path.join(DATA_DIR, 'library_cache_v2.json');
-  const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
-  const PLAYLISTS_FILE = path.join(DATA_DIR, 'playlists.json');
-  const EQ_FILE = path.join(DATA_DIR, 'eq_settings.json');
-
-  const countRes = db.exec('SELECT COUNT(*) as count FROM tracks');
-  const currentTracksCount = countRes.length ? countRes[0].values[0][0] : 0;
-
-  if (currentTracksCount === 0 && fs.existsSync(CACHE_FILE)) {
-    try {
-      const cached = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
-      if (Array.isArray(cached) && cached.length > 0) {
-        console.log(`⏳ [SQLite Migration] Migrando ${cached.length} canciones a SQLite...`);
-        db.run('BEGIN TRANSACTION');
-        const stmt = db.prepare(`
-          INSERT INTO tracks (path, title, artist, album, genre, year, duration)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT(path) DO UPDATE SET
-            title = excluded.title,
-            artist = excluded.artist,
-            album = excluded.album,
-            genre = excluded.genre,
-            year = excluded.year,
-            duration = excluded.duration
-        `);
-
-        for (const t of cached) {
-          stmt.run([t.path, t.title, t.artist, t.album || null, t.genre || 'Varios', t.year || null, t.duration || 0]);
-        }
-        stmt.free();
-        db.run('COMMIT');
-        saveDb();
-        console.log('✅ [SQLite Migration] Catálogo importado a SQLite.');
-      }
-    } catch (e) {
-      console.error('[Migration Error] library_cache_v2.json:', e.message);
-    }
-  }
-
-  // Migrar Favoritos
-  if (fs.existsSync(FAVORITES_FILE)) {
-    try {
-      const favs = JSON.parse(fs.readFileSync(FAVORITES_FILE, 'utf-8'));
-      if (Array.isArray(favs)) {
-        for (const p of favs) {
-          db.run('INSERT OR IGNORE INTO favorites (track_path, created_at) VALUES (?, ?)', [p, Date.now()]);
-        }
-        saveDb();
-        console.log(`❤️ [SQLite Migration] ${favs.length} favoritos importados.`);
-      }
-    } catch (e) {}
-  }
-
-  // Migrar Playlists
-  if (fs.existsSync(PLAYLISTS_FILE)) {
-    try {
-      const pls = JSON.parse(fs.readFileSync(PLAYLISTS_FILE, 'utf-8'));
-      if (Array.isArray(pls)) {
-        for (const pl of pls) {
-          db.run('INSERT OR REPLACE INTO playlists (id, name, created_at) VALUES (?, ?, ?)', [pl.id, pl.name, pl.createdAt || Date.now()]);
-          if (Array.isArray(pl.tracks)) {
-            pl.tracks.forEach((tPath, idx) => {
-              db.run('INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_path, position) VALUES (?, ?, ?)', [pl.id, tPath, idx + 1]);
-            });
-          }
-        }
-        saveDb();
-        console.log(`📁 [SQLite Migration] ${pls.length} playlists importadas.`);
-      }
-    } catch (e) {}
-  }
-
-  // Migrar EQ
-  if (fs.existsSync(EQ_FILE)) {
-    try {
-      const eq = fs.readFileSync(EQ_FILE, 'utf-8');
-      db.run('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)', ['eq_settings', eq]);
-      saveDb();
-    } catch (e) {}
-  }
-};
-
-migrateOldJSONFiles();
-
-// 4. Capa DAO Exportable
 export const dbService = {
+  // Catálogo de Pistas
   getAllTracks: () => {
     const res = db.exec('SELECT * FROM tracks ORDER BY id ASC');
     if (!res.length) return [];
@@ -234,8 +141,7 @@ export const dbService = {
   // Favoritos
   getFavorites: () => {
     const res = db.exec('SELECT track_path FROM favorites ORDER BY created_at DESC');
-    if (!res.length) return [];
-    return res[0].values.map(row => row[0]);
+    return res.length ? res[0].values.map(r => r[0]) : [];
   },
 
   toggleFavorite: (trackPath) => {
@@ -287,7 +193,7 @@ export const dbService = {
     saveDb();
   },
 
-  // Settings
+  // Configuración & DSP
   getSetting: (key, defaultValue = null) => {
     const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
     stmt.bind([key]);
@@ -305,7 +211,7 @@ export const dbService = {
     saveDb();
   },
 
-  // MÉTODOS DAO PARA LETRAS (LYRICS)
+  // Letras Sincronizadas
   getLyrics: (trackPath) => {
     const stmt = db.prepare('SELECT plain_lyrics, synced_lyrics FROM lyrics WHERE track_path = ?');
     stmt.bind([trackPath]);
@@ -344,5 +250,54 @@ export const dbService = {
       columns.forEach((col, idx) => { obj[col] = row[idx]; });
       return obj;
     });
+  },
+
+  // Búsqueda Rápida Inteligente (Metadatos + Letras)
+  searchTracks: (query) => {
+    if (!query || !query.trim()) return [];
+    const term = `%${query.trim().toLowerCase()}%`;
+
+    const sql = `
+      SELECT 
+        t.id, t.path, t.title, t.artist, t.album, t.genre, t.duration,
+        CASE 
+          WHEN LOWER(t.title) LIKE $term THEN 'title'
+          WHEN LOWER(t.artist) LIKE $term THEN 'artist'
+          WHEN LOWER(COALESCE(t.album, '')) LIKE $term THEN 'album'
+          WHEN LOWER(COALESCE(l.plain_lyrics, '')) LIKE $term OR LOWER(COALESCE(l.synced_lyrics, '')) LIKE $term THEN 'lyrics'
+          ELSE 'genre'
+        END AS match_type,
+        l.plain_lyrics,
+        l.synced_lyrics
+      FROM tracks t
+      LEFT JOIN lyrics l ON t.path = l.track_path
+      WHERE 
+        LOWER(t.title) LIKE $term OR 
+        LOWER(t.artist) LIKE $term OR 
+        LOWER(COALESCE(t.album, '')) LIKE $term OR 
+        LOWER(COALESCE(t.genre, '')) LIKE $term OR
+        LOWER(COALESCE(l.plain_lyrics, '')) LIKE $term OR
+        LOWER(COALESCE(l.synced_lyrics, '')) LIKE $term
+      LIMIT 100
+    `;
+
+    const stmt = db.prepare(sql);
+    stmt.bind({ '$term': term });
+    const results = [];
+
+    while (stmt.step()) {
+      const row = stmt.getAsObject();
+      if (row.match_type === 'lyrics' && (row.synced_lyrics || row.plain_lyrics)) {
+        const rawText = row.synced_lyrics || row.plain_lyrics;
+        const lines = rawText.split('\n');
+        const matchedLine = lines.find(l => l.toLowerCase().includes(query.toLowerCase()));
+        row.matched_snippet = matchedLine ? matchedLine.replace(/\[\d{2}:\d{2}\.\d{2,3}\]/g, '').trim() : null;
+      }
+      delete row.plain_lyrics;
+      delete row.synced_lyrics;
+      results.push(row);
+    }
+    stmt.free();
+    return results;
   }
 };

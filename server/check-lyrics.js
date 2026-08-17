@@ -1,14 +1,11 @@
 // server/check-lyrics.js
 import initSqlJs from 'sql.js';
-import path from 'path';
 import fs from 'fs';
-
-const DATA_DIR = path.resolve('data');
-const DB_PATH = path.join(DATA_DIR, 'music.db');
+import { DB_PATH } from './config/constants.js';
 
 async function checkDatabase() {
   if (!fs.existsSync(DB_PATH)) {
-    console.error('❌ No se encontró el archivo data/music.db');
+    console.error(`❌ No se encontró la base de datos en: ${DB_PATH}`);
     process.exit(1);
   }
 
@@ -18,13 +15,8 @@ async function checkDatabase() {
 
   console.log('📊 ===== REPORTE DE ESTADO: BASE DE DATOS SQLITE =====\n');
 
-  // 1. Total de canciones registradas
   const totalTracksRes = db.exec('SELECT COUNT(*) FROM tracks');
   const totalTracks = totalTracksRes[0].values[0][0];
-
-  // 2. Conteo de letras
-  const totalLyricsRes = db.exec('SELECT COUNT(*) FROM lyrics');
-  const totalLyricsRecords = totalLyricsRes.length ? totalLyricsRes[0].values[0][0] : 0;
 
   const syncedLyricsRes = db.exec("SELECT COUNT(*) FROM lyrics WHERE synced_lyrics IS NOT NULL AND synced_lyrics != ''");
   const totalSynced = syncedLyricsRes.length ? syncedLyricsRes[0].values[0][0] : 0;
@@ -48,11 +40,10 @@ async function checkDatabase() {
   console.log(`⚠️ No encontradas en LRCLIB:        ${totalNotFound}`);
   console.log(`⏳ Pendientes por escanear:         ${totalPending}\n`);
 
-  // 3. Muestra de 3 pistas sincronizadas para validación visual
   if (totalSynced > 0) {
     console.log('🎵 Muestra de pistas con letras sincronizadas:');
     const sampleRes = db.exec(`
-      SELECT t.artist, t.title, SUBSTR(l.synced_lyrics, 1, 100) as preview 
+      SELECT t.artist, t.title, SUBSTR(l.synced_lyrics, 1, 90) as preview 
       FROM lyrics l 
       JOIN tracks t ON l.track_path = t.path 
       WHERE l.synced_lyrics IS NOT NULL 

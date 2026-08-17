@@ -1,6 +1,6 @@
 // server/sync-lyrics-cli.js
-import { dbService } from './database.js';
-import { fetchLyricsFromLRCLIB } from './lyricsService.js';
+import { dbService } from './services/dbService.js';
+import { fetchLyricsFromLRCLIB } from './services/lyricsService.js';
 
 async function runCliSync() {
   console.log('🔍 [CLI Sync] Analizando catálogo en SQLite...');
@@ -29,14 +29,12 @@ async function runCliSync() {
         dbService.saveLyrics(track.path, result.plainLyrics, result.syncedLyrics);
         found++;
       } else {
-        // Marcar como revisada para evitar reintentos en el siguiente escaneo
         dbService.saveLyrics(track.path, null, null);
       }
     } catch (err) {
       // Ignorar fallos de red puntuales
     }
 
-    // Rate Limiting para la API pública
     await new Promise(r => setTimeout(r, 120));
   }
 
