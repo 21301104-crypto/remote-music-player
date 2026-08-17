@@ -10,7 +10,11 @@ import net from 'net';
 import multer from 'multer';
 import * as musicMetadata from 'music-metadata';
 import { dbService } from './database.js';
+import { fetchLyricsFromLRCLIB, startBulkLyricsSync } from './lyricsService.js';
 
+// =========================================================================
+// 1. INICIALIZACIÓN DE SERVIDOR EXPRESS Y SOCKET.IO
+// =========================================================================
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
@@ -22,11 +26,16 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('dist'));
 
+// =========================================================================
+// 2. CONSTANTES DE HARDWARE Y RUTAS
+// =========================================================================
 const MUSIC_DIR = '/storage/9C33-6BBD/Music';
 const MPV_SOCKET = path.resolve('mpv.sock');
 const SUPPORTED_EXTENSIONS = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'];
 
-// Variables Globales
+// =========================================================================
+// 3. ESTADO GLOBAL EN MEMORIA (DECLARACIÓN TEMPRANA PARA EVITAR TDZ)
+// =========================================================================
 let mpvProcess = null;
 let mpvSocketClient = null;
 let isMpvReady = false;
@@ -35,7 +44,7 @@ let masterLibrary = [];
 let activeQueue = [];
 let currentIndex = 0;
 let isShuffle = false;
-let repeatMode = 'all';
+let repeatMode = 'all'; // 'off' | 'all' | 'one'
 let currentFilterMode = 'all';
 let selectedArtist = null;
 let selectedGenre = null;
@@ -55,13 +64,15 @@ let currentTrackData = {
   duration: 0
 };
 
-// Sleep Timer
+// Control de Sleep Timer
 let sleepTimerInterval = null;
 let sleepTimerEndsAt = 0;
 let sleepTimerBaseVolume = 10;
 let isFadingOut = false;
 
-// Configuración Web Uploader (Multer)
+// =========================================================================
+// 4. CONFIGURACIÓN DEL WEB UPLOADER (MULTER)
+// =========================================================================
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, MUSIC_DIR),
   filename: (req, file, cb) => {
@@ -81,10 +92,12 @@ const upload = multer({
       cb(new Error(`Extensión no permitida: ${ext}`), false);
     }
   },
-  limits: { fileSize: 250 * 1024 * 1024 }
+  limits: { fileSize: 250 * 1024 * 1024 } // 250MB límite por archivo
 });
 
-// Configuración DSP
+// =========================================================================
+// 5. MOTOR DSP & ECUALIZADOR PARAMÉTRICO
+// =========================================================================
 const DEFAULT_EQ = {
   enabled: true,
   preset: 'bass_boost',
@@ -112,7 +125,9 @@ const buildEqualizerFilter = (eq) => {
   return `lavfi=[volume=${preampDb}dB,${eqFilters.join(',')},alimiter=level_in=1:level_out=0.98:limit=0.98:attack=5:release=50]`;
 };
 
-// Control de MPV
+// =========================================================================
+// 6. CONTROL DEL MOTOR MPV (IPC SOCKET)
+// =========================================================================
 const sendMpvCommand = (commandArray) => {
   if (!mpvSocketClient || !isMpvReady) return;
   try {
@@ -195,7 +210,9 @@ process.on('exit', cleanupProcesses);
 process.on('SIGINT', () => { cleanupProcesses(); process.exit(0); });
 process.on('SIGTERM', () => { cleanupProcesses(); process.exit(0); });
 
-// Normalizador ID3
+// =========================================================================
+// 7. NORMALIZACIÓN & PARSEO ID3
+// =========================================================================
 const isNumeric = (str) => typeof str === 'string' && /^\d+$/.test(str.trim());
 
 const normalizeGenre = (rawGenre) => {
@@ -315,7 +332,9 @@ const parseTrackID3 = async (relativePath) => {
   }
 };
 
-// Estado y Colas
+// =========================================================================
+// 8. SLEEP TIMER & RECONSTRUCCIÓN DE COLAS
+// =========================================================================
 const getSleepTimerState = () => {
   if (!sleepTimerEndsAt || sleepTimerEndsAt <= Date.now()) return { active: false, remainingSeconds: 0 };
   return {
@@ -438,7 +457,9 @@ const broadcastState = () => {
   });
 };
 
-// Inicialización SQLite WASM
+// =========================================================================
+// 9. INICIALIZACIÓN DE LA BIBLIOTECA (SQLITE CORE)
+// =========================================================================
 const initLibrary = async () => {
   const diskFiles = scanMusicDirectory(MUSIC_DIR);
   const dbCount = dbService.getTracksCount();
@@ -473,6 +494,9 @@ const initLibrary = async () => {
 
 initLibrary();
 
+// =========================================================================
+// 10. REPRODUCCIÓN Y TRANSPORTE DE AUDIO
+// =========================================================================
 const playCurrentTrack = async () => {
   if (!activeQueue.length) return;
   if (currentIndex < 0 || currentIndex >= activeQueue.length) currentIndex = 0;
@@ -513,7 +537,9 @@ const prevTrack = () => {
   playCurrentTrack();
 };
 
-// Endpoints REST
+// =========================================================================
+// 11. ENDPOINTS REST API
+// =========================================================================
 app.get('/api/cover', async (req, res) => {
   const relativePath = req.query.path;
   if (!relativePath) return res.status(400).send('Falta ruta');
@@ -531,6 +557,30 @@ app.get('/api/cover', async (req, res) => {
     }
   } catch (e) {}
   res.status(404).send('Sin carátula');
+});
+
+app.get('/api/lyrics', async (req, res) => {
+  const relativePath = req.query.path;
+  if (!relativePath) return res.status(400).json({ error: 'Falta parámetro path' });
+
+  let lyrics = dbService.getLyrics(relativePath);
+
+  if (!lyrics) {
+    const trackObj = dbService.getTrackByPath(relativePath);
+    if (trackObj) {
+      const fetched = await fetchLyricsFromLRCLIB(trackObj);
+      if (fetched) {
+        dbService.saveLyrics(relativePath, fetched.plainLyrics, fetched.syncedLyrics);
+        lyrics = fetched;
+      }
+    }
+  }
+
+  res.json({
+    trackPath: relativePath,
+    plainLyrics: lyrics?.plain_lyrics || lyrics?.plainLyrics || null,
+    syncedLyrics: lyrics?.synced_lyrics || lyrics?.syncedLyrics || null
+  });
 });
 
 app.post('/api/upload', upload.array('audioFiles', 100), async (req, res) => {
@@ -580,7 +630,9 @@ app.get('/api/library', (req, res) => {
   });
 });
 
-// Socket.IO
+// =========================================================================
+// 12. WEBSOCKETS (SOCKET.IO - CANAL DE COMUNICACIÓN EN VIVO)
+// =========================================================================
 io.on('connection', (socket) => {
   socket.emit('state_changed', {
     isPlaying,
@@ -645,6 +697,14 @@ io.on('connection', (socket) => {
         playCurrentTrack();
       }
     }
+  });
+
+  socket.on('seek_audio', (seconds) => {
+    const targetSec = Math.max(0, Math.min(parseFloat(seconds) || 0, currentTrackData.duration || 9999));
+    sendMpvCommand(['seek', targetSec, 'absolute']);
+    elapsedOffset = targetSec;
+    playStartTime = Date.now();
+    broadcastState();
   });
 
   socket.on('next', () => nextTrack(true));
@@ -722,7 +782,38 @@ io.on('connection', (socket) => {
 
   socket.on('set_sleep_timer', (minutes) => startSleepTimer(minutes));
   socket.on('cancel_sleep_timer', () => cancelSleepTimer(true));
+
+  // --- LETRAS SINCRONIZADAS ---
+  socket.on('get_lyrics', async (trackPath) => {
+    if (!trackPath) return;
+
+    let lyrics = dbService.getLyrics(trackPath);
+
+    if (!lyrics) {
+      const trackObj = dbService.getTrackByPath(trackPath);
+      if (trackObj) {
+        const fetched = await fetchLyricsFromLRCLIB(trackObj);
+        if (fetched) {
+          dbService.saveLyrics(trackPath, fetched.plainLyrics, fetched.syncedLyrics);
+          lyrics = fetched;
+        }
+      }
+    }
+
+    socket.emit('lyrics_data', {
+      trackPath,
+      plainLyrics: lyrics?.plain_lyrics || lyrics?.plainLyrics || null,
+      syncedLyrics: lyrics?.synced_lyrics || lyrics?.syncedLyrics || null
+    });
+  });
+
+  socket.on('start_bulk_lyrics_sync', () => {
+    startBulkLyricsSync(io);
+  });
 });
 
+// =========================================================================
+// 13. ARRANQUE DEL SERVIDOR
+// =========================================================================
 const PORT = 3000;
 httpServer.listen(PORT, '0.0.0.0', () => console.log(`🚀 Servidor DAP Full-Stack activo en puerto ${PORT}`));

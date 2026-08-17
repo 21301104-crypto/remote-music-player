@@ -7,6 +7,7 @@ import SleepTimerModal from './components/SleepTimerModal.vue';
 import PlaylistModal from './components/PlaylistModal.vue';
 import EqualizerModal from './components/EqualizerModal.vue';
 import UploaderModal from './components/UploaderModal.vue';
+import LyricsModal from './components/LyricsModal.vue';
 
 const BACKEND_URL = import.meta.env.DEV
   ? `http://${window.location.hostname}:3000`
@@ -20,6 +21,10 @@ const isSleepTimerModalOpen = ref(false);
 const isPlaylistModalOpen = ref(false);
 const isEqualizerModalOpen = ref(false);
 const isUploaderModalOpen = ref(false);
+const isLyricsModalOpen = ref(false);
+
+const currentLyricsData = ref(null);
+const lyricsSyncProgress = ref(null);
 
 const playlistModalMode = ref('create');
 const selectedTrackForPlaylist = ref(null);
@@ -30,9 +35,7 @@ let toastTimer = null;
 const showToast = (msg) => {
   if (toastTimer) clearTimeout(toastTimer);
   toastMessage.value = msg;
-  toastTimer = setTimeout(() => {
-    toastMessage.value = '';
-  }, 2200);
+  toastTimer = setTimeout(() => { toastMessage.value = ''; }, 2200);
 };
 
 const sleepTimer = ref({ active: false, remainingSeconds: 0 });
@@ -101,6 +104,7 @@ const nextTrack = () => { imageError.value = false; socket.emit('next'); };
 const prevTrack = () => { imageError.value = false; socket.emit('prev'); };
 const toggleShuffle = () => socket.emit('toggle_shuffle');
 const toggleRepeat = () => socket.emit('toggle_repeat');
+const seekAudio = (targetSeconds) => socket.emit('seek_audio', targetSeconds);
 
 const setFilter = (mode, param = null) => {
   imageError.value = false;
@@ -124,10 +128,22 @@ const changeVolume = () => {
   socket.emit('set_volume', volume.value);
 };
 
-// Modales
+// Modales & Letras
 const setSleepTimer = (minutes) => socket.emit('set_sleep_timer', minutes);
 const cancelSleepTimer = () => socket.emit('cancel_sleep_timer');
 const handleUpdateEq = (newEq) => socket.emit('set_eq', newEq);
+
+const openLyricsModal = () => {
+  if (currentTrack.value.path) {
+    socket.emit('get_lyrics', currentTrack.value.path);
+  }
+  isLyricsModalOpen.value = true;
+};
+
+const startBulkSync = () => {
+  socket.emit('start_bulk_lyrics_sync');
+  showToast('Iniciando descarga de letras...');
+};
 
 const openCreatePlaylistModal = () => {
   playlistModalMode.value = 'create';
@@ -215,6 +231,13 @@ watch(coverUrl, (newUrl) => {
   if (newUrl) extractColorsFromImage(newUrl);
 });
 
+// Pedir letras cuando cambia la pista y el modal está abierto
+watch(() => currentTrack.value.path, (newPath) => {
+  if (newPath && isLyricsModalOpen.value) {
+    socket.emit('get_lyrics', newPath);
+  }
+});
+
 const startProgressTicker = () => {
   if (progressInterval) clearInterval(progressInterval);
   progressInterval = setInterval(() => {
@@ -262,6 +285,24 @@ onMounted(() => {
     queue.value = state.queue || [];
     masterLibrary.value = state.masterLibrary || [];
   });
+
+  socket.on('lyrics_data', (data) => {
+    if (data.trackPath === currentTrack.value.path) {
+      currentLyricsData.value = data;
+    }
+  });
+
+  socket.on('lyrics_sync_progress', (progress) => {
+    lyricsSyncProgress.value = progress;
+  });
+
+  socket.on('lyrics_sync_completed', ({ found, total }) => {
+    lyricsSyncProgress.value = { percentage: 100, processed: total, total };
+    showToast(`¡Listo! ${found} letras guardadas en SQLite`);
+    if (currentTrack.value.path) {
+      socket.emit('get_lyrics', currentTrack.value.path);
+    }
+  });
 });
 
 onUnmounted(() => {
@@ -295,6 +336,19 @@ onUnmounted(() => {
           </div>
 
           <div class="header-actions">
+            <!-- Botón Letras Sincronizadas (Karaoke) -->
+            <button 
+              class="btn-header-icon" 
+              @click="openLyricsModal"
+              title="Letras en vivo"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                <line x1="9" y1="9" x2="15" y2="9"></line>
+                <line x1="9" y1="13" x2="13" y2="13"></line>
+              </svg>
+            </button>
+
             <!-- Botón Web Uploader -->
             <button 
               class="btn-header-icon" 
@@ -370,7 +424,7 @@ onUnmounted(() => {
               </button>
             </div>
 
-            <div class="cover-container">
+            <div class="cover-container" @click="openLyricsModal" style="cursor: pointer;" title="Toca para ver letras">
               <img 
                 v-if="coverUrl" 
                 :src="coverUrl" 
@@ -620,7 +674,6 @@ onUnmounted(() => {
               </div>
 
               <div class="item-actions">
-                <!-- Botón: REPRODUCIR A CONTINUACIÓN (Play Next) -->
                 <button 
                   class="btn-play-next" 
                   @click="playNext(track, $event)"
@@ -634,7 +687,6 @@ onUnmounted(() => {
                   </svg>
                 </button>
 
-                <!-- Botón: AGREGAR A PLAYLIST -->
                 <button class="btn-add-pl" @click="openAddToPlaylistModal(track, $event)" title="Agregar a Playlist">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -642,7 +694,6 @@ onUnmounted(() => {
                   </svg>
                 </button>
 
-                <!-- Botón: FAVORITOS -->
                 <button class="btn-fav-item" @click="toggleFavorite(track.path, $event)">
                   <svg viewBox="0 0 24 24" :fill="isTrackFavorite(track.path) ? '#ef4444' : 'none'" stroke="#ef4444" stroke-width="2">
                     <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
@@ -691,6 +742,19 @@ onUnmounted(() => {
       :backend-url="BACKEND_URL"
       @close="isUploaderModalOpen = false"
     />
+
+    <!-- MODAL DE LETRAS EN VIVO (ESTILO APPLE MUSIC) -->
+    <LyricsModal
+      :is-open="isLyricsModalOpen"
+      :current-track="currentTrack"
+      :current-time="currentTime"
+      :cover-url="coverUrl"
+      :lyrics-data="currentLyricsData"
+      :sync-progress="lyricsSyncProgress"
+      @close="isLyricsModalOpen = false"
+      @seek="seekAudio"
+      @start-sync="startBulkSync"
+    />
   </div>
 </template>
 
@@ -705,7 +769,6 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 
-/* Toast Bubble */
 .toast-bubble {
   position: fixed;
   top: max(16px, env(safe-area-inset-top));
@@ -722,26 +785,11 @@ onUnmounted(() => {
   z-index: 300;
   pointer-events: none;
 }
-.toast-bubble svg {
-  width: 16px;
-  height: 16px;
-  color: var(--theme-accent, #38bdf8);
-}
-.toast-bubble span {
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: #f8fafc;
-  white-space: nowrap;
-}
-.toast-fade-enter-active, .toast-fade-leave-active {
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.toast-fade-enter-from, .toast-fade-leave-to {
-  opacity: 0;
-  transform: translate(-50%, -15px);
-}
+.toast-bubble svg { width: 16px; height: 16px; color: var(--theme-accent, #38bdf8); }
+.toast-bubble span { font-size: 0.78rem; font-weight: 700; color: #f8fafc; white-space: nowrap; }
+.toast-fade-enter-active, .toast-fade-leave-active { transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
+.toast-fade-enter-from, .toast-fade-leave-to { opacity: 0; transform: translate(-50%, -15px); }
 
-/* Layout Responsivo */
 .app-responsive-container {
   width: 100%;
   max-width: 390px;
@@ -754,30 +802,11 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.sidebar-panel {
-  display: flex;
-  flex-direction: column;
-}
+.sidebar-panel { display: flex; flex-direction: column; }
+.main-content-panel { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 
-.main-content-panel {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-}
-
-/* Navbar */
-.navbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+.navbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.brand { display: flex; align-items: center; gap: 8px; }
 .brand-monogram {
   background: #111827;
   border: 1px solid rgba(255, 255, 255, 0.15);
@@ -788,20 +817,10 @@ onUnmounted(() => {
   letter-spacing: 0.5px;
   color: var(--theme-accent, #38bdf8);
 }
-.navbar h2 {
-  margin: 0;
-  font-size: 1.1rem;
-  font-weight: 900;
-  letter-spacing: 0.5px;
-}
+.navbar h2 { margin: 0; font-size: 1.1rem; font-weight: 900; letter-spacing: 0.5px; }
 .brand-accent { color: var(--theme-accent, #38bdf8); }
 
-.header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
+.header-actions { display: flex; align-items: center; gap: 6px; }
 .btn-header-icon {
   display: flex;
   align-items: center;
@@ -820,11 +839,7 @@ onUnmounted(() => {
   color: var(--theme-accent, #38bdf8);
   background: rgba(56, 189, 248, 0.1);
 }
-.timer-mini-text {
-  font-size: 0.65rem;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-}
+.timer-mini-text { font-size: 0.65rem; font-weight: 800; font-variant-numeric: tabular-nums; }
 
 .status-pill {
   display: flex;
@@ -835,22 +850,10 @@ onUnmounted(() => {
   padding: 5px 8px;
   border-radius: 14px;
 }
-.status-indicator {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #ef4444;
-}
-.status-pill.connected .status-indicator {
-  background: var(--theme-accent, #38bdf8);
-}
-.status-text {
-  font-size: 0.65rem;
-  font-weight: 800;
-  color: #9ca3af;
-}
+.status-indicator { width: 5px; height: 5px; border-radius: 50%; background: #ef4444; }
+.status-pill.connected .status-indicator { background: var(--theme-accent, #38bdf8); }
+.status-text { font-size: 0.65rem; font-weight: 800; color: #9ca3af; }
 
-/* Category Tabs */
 .category-toggle {
   display: flex;
   background: rgba(17, 24, 39, 0.7);
@@ -872,12 +875,8 @@ onUnmounted(() => {
   cursor: pointer;
   transition: all 0.2s ease;
 }
-.toggle-tab.active {
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--theme-accent, #38bdf8);
-}
+.toggle-tab.active { background: rgba(255, 255, 255, 0.12); color: var(--theme-accent, #38bdf8); }
 
-/* Filters Strip */
 .filter-strip {
   display: flex;
   gap: 6px;
@@ -902,30 +901,15 @@ onUnmounted(() => {
   cursor: pointer;
   transition: all 0.15s ease;
 }
-.tab-btn small {
-  background: rgba(255, 255, 255, 0.08);
-  padding: 1px 5px;
-  border-radius: 4px;
-  font-size: 0.62rem;
-}
-.tab-btn.active {
-  background: var(--theme-accent, #38bdf8);
-  color: #030712;
-  border-color: var(--theme-accent, #38bdf8);
-  font-weight: 800;
-}
-.tab-fav.active {
-  background: #dc2626;
-  border-color: #ef4444;
-  color: #fff;
-}
+.tab-btn small { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 4px; font-size: 0.62rem; }
+.tab-btn.active { background: var(--theme-accent, #38bdf8); color: #030712; border-color: var(--theme-accent, #38bdf8); font-weight: 800; }
+.tab-fav.active { background: #dc2626; border-color: #ef4444; color: #fff; }
 .tab-fav-icon { width: 11px; height: 11px; }
 
 .btn-new-pl { border-style: dashed; border-color: var(--theme-accent, #38bdf8); color: var(--theme-accent, #38bdf8); }
 .tab-pl-item { position: relative; padding-right: 24px; }
 .btn-del-pl { position: absolute; right: 5px; top: 50%; transform: translateY(-50%); font-size: 0.6rem; color: #ef4444; }
 
-/* Reproductor Deck */
 .player-card {
   position: relative;
   overflow: hidden;
@@ -935,13 +919,7 @@ onUnmounted(() => {
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6);
 }
 
-.card-blur-backdrop {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  overflow: hidden;
-  pointer-events: none;
-}
+.card-blur-backdrop { position: absolute; inset: 0; z-index: 1; overflow: hidden; pointer-events: none; }
 .card-blur-img {
   width: 100%;
   height: 100%;
@@ -956,23 +934,10 @@ onUnmounted(() => {
   background: radial-gradient(circle at center, rgba(11, 15, 25, 0.3) 0%, rgba(3, 7, 18, 0.85) 100%);
 }
 
-.deck-inner-content {
-  position: relative;
-  z-index: 2;
-  padding: 14px 16px;
-}
+.deck-inner-content { position: relative; z-index: 2; padding: 14px 16px; }
 
-.deck-top-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 10px;
-}
-.badge-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+.deck-top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.badge-group { display: flex; align-items: center; gap: 6px; }
 .deck-badge {
   font-size: 0.65rem;
   font-weight: 800;
@@ -1007,11 +972,7 @@ onUnmounted(() => {
 }
 .fav-deck-btn svg { width: 16px; height: 16px; }
 
-.cover-container {
-  width: 165px;
-  height: 165px;
-  margin: 0 auto 12px auto;
-}
+.cover-container { width: 165px; height: 165px; margin: 0 auto 12px auto; }
 .cover-art {
   width: 100%;
   height: 100%;
@@ -1032,10 +993,7 @@ onUnmounted(() => {
 }
 .cover-fallback svg { width: 50px; height: 50px; color: #4b5563; }
 
-.track-meta-center {
-  text-align: center;
-  margin-bottom: 12px;
-}
+.track-meta-center { text-align: center; margin-bottom: 12px; }
 .track-title-main {
   margin: 0 0 2px 0;
   font-size: 1.05rem;
@@ -1052,12 +1010,8 @@ onUnmounted(() => {
   font-weight: 700;
   text-shadow: 0 1px 3px rgba(0,0,0,0.6);
 }
-.track-album-main {
-  font-size: 0.7rem;
-  color: #9ca3af;
-}
+.track-album-main { font-size: 0.7rem; color: #9ca3af; }
 
-/* Timeline */
 .progress-box { margin-bottom: 12px; }
 .progress-track {
   width: 100%;
@@ -1093,7 +1047,6 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
-/* Controles */
 .controls-deck {
   display: flex;
   justify-content: space-between;
@@ -1115,17 +1068,9 @@ onUnmounted(() => {
   transition: all 0.15s ease;
 }
 .btn-deck-action svg { width: 16px; height: 16px; }
-.btn-deck-action.active {
-  background: var(--theme-accent, #38bdf8);
-  color: #030712;
-}
+.btn-deck-action.active { background: var(--theme-accent, #38bdf8); color: #030712; }
 
-.repeat-icon-box {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
+.repeat-icon-box { position: relative; display: flex; align-items: center; justify-content: center; }
 .repeat-badge-one {
   position: absolute;
   top: -6px;
@@ -1138,10 +1083,7 @@ onUnmounted(() => {
   border-radius: 4px;
   line-height: 1;
 }
-.btn-deck-action.active .repeat-badge-one {
-  background: #ffffff;
-  color: #030712;
-}
+.btn-deck-action.active .repeat-badge-one { background: #ffffff; color: #030712; }
 
 .btn-deck-skip {
   background: rgba(0, 0, 0, 0.4);
@@ -1185,7 +1127,6 @@ onUnmounted(() => {
 .hw-slider { flex: 1; height: 3px; accent-color: var(--theme-accent, #38bdf8); cursor: pointer; }
 .hw-vol-num { font-size: 0.7rem; font-weight: 800; color: var(--theme-accent, #38bdf8); width: 14px; text-align: right; }
 
-/* Cola Card */
 .queue-card {
   flex: 1;
   background: rgba(17, 24, 39, 0.7);
@@ -1253,11 +1194,7 @@ onUnmounted(() => {
   min-width: 0;
   padding-right: 8px;
 }
-.title-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+.title-row { display: flex; align-items: center; gap: 6px; }
 .track-name {
   font-size: 0.78rem;
   font-weight: 700;
@@ -1265,9 +1202,7 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.track-queue li.is-active .track-name {
-  color: var(--theme-accent, #38bdf8);
-}
+.track-queue li.is-active .track-name { color: var(--theme-accent, #38bdf8); }
 .now-badge {
   font-size: 0.55rem;
   font-weight: 900;
@@ -1279,12 +1214,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.sub-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 1px;
-}
+.sub-row { display: flex; align-items: center; gap: 4px; margin-top: 1px; }
 .track-artist-text { font-size: 0.68rem; color: #9ca3af; }
 .track-album-text { font-size: 0.65rem; color: #6b7280; }
 .track-genre-tag { font-size: 0.65rem; color: var(--theme-accent, #38bdf8); font-weight: 600; }
@@ -1297,13 +1227,8 @@ onUnmounted(() => {
   margin-right: 14px;
 }
 
-.item-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
+.item-actions { display: flex; align-items: center; gap: 6px; }
 
-/* Botón Reproducir a Continuación */
 .btn-play-next {
   background: transparent;
   border: none;
@@ -1321,28 +1246,12 @@ onUnmounted(() => {
 }
 .btn-play-next svg { width: 15px; height: 15px; }
 
-.btn-add-pl {
-  background: transparent;
-  border: none;
-  color: #6b7280;
-  cursor: pointer;
-  padding: 2px;
-}
+.btn-add-pl { background: transparent; border: none; color: #6b7280; cursor: pointer; padding: 2px; }
 .btn-add-pl svg { width: 14px; height: 14px; }
-.btn-fav-item {
-  background: transparent;
-  border: none;
-  padding: 2px;
-  cursor: pointer;
-}
+.btn-fav-item { background: transparent; border: none; padding: 2px; cursor: pointer; }
 .btn-fav-item svg { width: 13px; height: 13px; }
 
-.bars-anim {
-  display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  height: 10px;
-}
+.bars-anim { display: flex; align-items: flex-end; gap: 2px; height: 10px; }
 .bars-anim span {
   width: 2px;
   background: var(--theme-accent, #38bdf8);
@@ -1353,16 +1262,10 @@ onUnmounted(() => {
 .bars-anim span:nth-child(2) { height: 100%; animation-delay: 0.3s; }
 .bars-anim span:nth-child(3) { height: 60%; animation-delay: 0.2s; }
 
-@keyframes jump {
-  0% { height: 20%; }
-  100% { height: 100%; }
-}
+@keyframes jump { 0% { height: 20%; } 100% { height: 100%; } }
 
 .empty-msg { text-align: center; color: #6b7280; font-size: 0.75rem; padding: 14px 0; }
 
-/* ==========================================================================
-   DESKTOP STUDIO LAYOUT (>= 900px)
-   ========================================================================== */
 @media (min-width: 900px) {
   .app-responsive-container {
     max-width: 1350px;
@@ -1373,77 +1276,22 @@ onUnmounted(() => {
     gap: 28px;
   }
 
-  .sidebar-panel {
-    position: sticky;
-    top: 24px;
-  }
+  .sidebar-panel { position: sticky; top: 24px; }
+  .player-card { border-radius: 28px; }
+  .cover-container { width: 210px; height: 210px; margin: 0 auto 16px auto; }
+  .track-title-main { font-size: 1.25rem; }
+  .track-artist-main { font-size: 0.95rem; }
 
-  .player-card {
-    border-radius: 28px;
-  }
-
-  .cover-container {
-    width: 210px;
-    height: 210px;
-    margin: 0 auto 16px auto;
-  }
-
-  .track-title-main {
-    font-size: 1.25rem;
-  }
-
-  .track-artist-main {
-    font-size: 0.95rem;
-  }
-
-  .queue-card {
-    border-radius: 28px;
-    padding: 20px 24px;
-    min-height: 600px;
-  }
-
-  .queue-header {
-    flex-direction: row;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 16px;
-  }
-
-  .search-bar {
-    width: 320px;
-    padding: 8px 14px;
-  }
-  .search-bar input {
-    font-size: 0.85rem;
-  }
-
-  .track-queue {
-    max-height: 68vh;
-    gap: 8px;
-  }
-
-  .track-queue li {
-    padding: 12px 16px;
-    border-radius: 12px;
-  }
-  .track-queue li:hover {
-    background: rgba(30, 41, 59, 0.5);
-  }
-
-  .track-name {
-    font-size: 0.9rem;
-  }
-
-  .track-artist-text {
-    font-size: 0.78rem;
-  }
-
-  .track-album-text {
-    font-size: 0.75rem;
-  }
-
-  .desktop-duration {
-    display: block;
-  }
+  .queue-card { border-radius: 28px; padding: 20px 24px; min-height: 600px; }
+  .queue-header { flex-direction: row; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .search-bar { width: 320px; padding: 8px 14px; }
+  .search-bar input { font-size: 0.85rem; }
+  .track-queue { max-height: 68vh; gap: 8px; }
+  .track-queue li { padding: 12px 16px; border-radius: 12px; }
+  .track-queue li:hover { background: rgba(30, 41, 59, 0.5); }
+  .track-name { font-size: 0.9rem; }
+  .track-artist-text { font-size: 0.78rem; }
+  .track-album-text { font-size: 0.75rem; }
+  .desktop-duration { display: block; }
 }
 </style>

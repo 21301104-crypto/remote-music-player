@@ -28,7 +28,6 @@ if (fs.existsSync(DB_PATH)) {
   console.log('📦 [SQLite WASM] Nueva base de datos inicializada.');
 }
 
-// Función de persistencia a disco físico
 const saveDb = () => {
   try {
     const data = db.export();
@@ -79,6 +78,17 @@ db.run(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  -- TABLA DE LETRAS OFFLINE (CACHÉ PERMANENTE)
+  CREATE TABLE IF NOT EXISTS lyrics (
+    track_path TEXT PRIMARY KEY,
+    plain_lyrics TEXT,
+    synced_lyrics TEXT,
+    updated_at INTEGER,
+    FOREIGN KEY(track_path) REFERENCES tracks(path) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_lyrics_track ON lyrics(track_path);
 `);
 saveDb();
 
@@ -168,7 +178,7 @@ const migrateOldJSONFiles = () => {
 
 migrateOldJSONFiles();
 
-// 4. Capa de Acceso a Datos (DAO) Exportable
+// 4. Capa DAO Exportable
 export const dbService = {
   getAllTracks: () => {
     const res = db.exec('SELECT * FROM tracks ORDER BY id ASC');
@@ -277,7 +287,7 @@ export const dbService = {
     saveDb();
   },
 
-  // Settings / DSP
+  // Settings
   getSetting: (key, defaultValue = null) => {
     const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
     stmt.bind([key]);
@@ -293,5 +303,46 @@ export const dbService = {
   setSetting: (key, value) => {
     db.run('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', [key, JSON.stringify(value)]);
     saveDb();
+  },
+
+  // MÉTODOS DAO PARA LETRAS (LYRICS)
+  getLyrics: (trackPath) => {
+    const stmt = db.prepare('SELECT plain_lyrics, synced_lyrics FROM lyrics WHERE track_path = ?');
+    stmt.bind([trackPath]);
+    if (stmt.step()) {
+      const row = stmt.getAsObject();
+      stmt.free();
+      return row;
+    }
+    stmt.free();
+    return null;
+  },
+
+  saveLyrics: (trackPath, plainLyrics, syncedLyrics) => {
+    db.run(`
+      INSERT INTO lyrics (track_path, plain_lyrics, synced_lyrics, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(track_path) DO UPDATE SET
+        plain_lyrics = excluded.plain_lyrics,
+        synced_lyrics = excluded.synced_lyrics,
+        updated_at = excluded.updated_at
+    `, [trackPath, plainLyrics || null, syncedLyrics || null, Date.now()]);
+    saveDb();
+  },
+
+  getTracksWithoutLyrics: () => {
+    const res = db.exec(`
+      SELECT t.path, t.title, t.artist, t.album, t.duration
+      FROM tracks t
+      LEFT JOIN lyrics l ON t.path = l.track_path
+      WHERE l.track_path IS NULL
+    `);
+    if (!res.length) return [];
+    const { columns, values } = res[0];
+    return values.map(row => {
+      const obj = {};
+      columns.forEach((col, idx) => { obj[col] = row[idx]; });
+      return obj;
+    });
   }
 };
