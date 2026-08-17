@@ -9,6 +9,7 @@ import path from 'path';
 import net from 'net';
 import multer from 'multer';
 import * as musicMetadata from 'music-metadata';
+import { dbService } from './database.js';
 
 const app = express();
 const httpServer = createServer(app);
@@ -21,52 +22,48 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('dist'));
 
-// =========================================================================
-// CONFIGURACIÓN DE RUTAS Y ALMACENAMIENTO
-// =========================================================================
 const MUSIC_DIR = '/storage/9C33-6BBD/Music';
-const DATA_DIR = path.resolve('data');
-const FAVORITES_FILE = path.join(DATA_DIR, 'favorites.json');
-const PLAYLISTS_FILE = path.join(DATA_DIR, 'playlists.json');
-const CACHE_FILE = path.join(DATA_DIR, 'library_cache_v2.json');
-const EQ_FILE = path.join(DATA_DIR, 'eq_settings.json');
 const MPV_SOCKET = path.resolve('mpv.sock');
 const SUPPORTED_EXTENSIONS = ['.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg'];
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-}
+// Variables Globales
+let mpvProcess = null;
+let mpvSocketClient = null;
+let isMpvReady = false;
 
-// Helpers de Persistencia JSON
-const loadJSON = (file, fallback = []) => {
-  try {
-    if (fs.existsSync(file)) {
-      return JSON.parse(fs.readFileSync(file, 'utf-8'));
-    }
-  } catch (err) {
-    console.error(`[Storage Error] Leyendo ${file}:`, err.message);
-  }
-  return fallback;
+let masterLibrary = [];
+let activeQueue = [];
+let currentIndex = 0;
+let isShuffle = false;
+let repeatMode = 'all';
+let currentFilterMode = 'all';
+let selectedArtist = null;
+let selectedGenre = null;
+let selectedPlaylistId = null;
+let currentVolume = 10;
+let isPlaying = false;
+
+let playStartTime = 0;
+let elapsedOffset = 0;
+
+let currentTrackData = {
+  path: null,
+  title: null,
+  artist: null,
+  album: null,
+  genre: 'Varios',
+  duration: 0
 };
 
-const saveJSON = (file, data) => {
-  try {
-    fs.writeFileSync(file, JSON.stringify(data, null, 2));
-  } catch (err) {
-    console.error(`[Storage Error] Guardando ${file}:`, err.message);
-  }
-};
+// Sleep Timer
+let sleepTimerInterval = null;
+let sleepTimerEndsAt = 0;
+let sleepTimerBaseVolume = 10;
+let isFadingOut = false;
 
-let favoritesList = loadJSON(FAVORITES_FILE, []);
-let playlistsList = loadJSON(PLAYLISTS_FILE, []);
-
-// =========================================================================
-// CONFIGURACIÓN DEL WEB UPLOADER (MULTER)
-// =========================================================================
+// Configuración Web Uploader (Multer)
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, MUSIC_DIR);
-  },
+  destination: (req, file, cb) => cb(null, MUSIC_DIR),
   filename: (req, file, cb) => {
     const rawOriginal = Buffer.from(file.originalname, 'latin1').toString('utf8');
     const cleanName = rawOriginal.replace(/[/\\?%*:|"<>]/g, '_');
@@ -87,9 +84,7 @@ const upload = multer({
   limits: { fileSize: 250 * 1024 * 1024 }
 });
 
-// =========================================================================
-// MOTOR DSP: ECUALIZADOR PARAMÉTRICO + LIMITER ANTI-CLIPPING
-// =========================================================================
+// Configuración DSP
 const DEFAULT_EQ = {
   enabled: true,
   preset: 'bass_boost',
@@ -107,30 +102,17 @@ const DEFAULT_EQ = {
   ]
 };
 
-let eqSettings = loadJSON(EQ_FILE, DEFAULT_EQ);
+let eqSettings = dbService.getSetting('eq_settings', DEFAULT_EQ);
 
 const buildEqualizerFilter = (eq) => {
-  if (!eq || !eq.enabled || !eq.bands || eq.bands.length === 0) {
-    return '';
-  }
-
+  if (!eq || !eq.enabled || !eq.bands || eq.bands.length === 0) return '';
   const maxGain = Math.max(0, ...eq.bands.map(b => Number(b.gain) || 0));
   const preampDb = maxGain > 0 ? -(maxGain * 0.85).toFixed(1) : 0;
-
-  const eqFilters = eq.bands.map(
-    b => `equalizer=f=${b.freq}:width_type=o:w=1.2:g=${b.gain}`
-  );
-
+  const eqFilters = eq.bands.map(b => `equalizer=f=${b.freq}:width_type=o:w=1.2:g=${b.gain}`);
   return `lavfi=[volume=${preampDb}dB,${eqFilters.join(',')},alimiter=level_in=1:level_out=0.98:limit=0.98:attack=5:release=50]`;
 };
 
-// =========================================================================
-// MOTOR DE AUDIO: MPV IPC SOCKET
-// =========================================================================
-let mpvProcess = null;
-let mpvSocketClient = null;
-let isMpvReady = false;
-
+// Control de MPV
 const sendMpvCommand = (commandArray) => {
   if (!mpvSocketClient || !isMpvReady) return;
   try {
@@ -200,16 +182,20 @@ const startMpvDaemon = () => {
 
 startMpvDaemon();
 
-process.on('exit', () => {
-  if (mpvProcess) mpvProcess.kill();
+const cleanupProcesses = () => {
+  if (mpvProcess) {
+    try { mpvProcess.kill('SIGTERM'); } catch (e) {}
+  }
   if (fs.existsSync(MPV_SOCKET)) {
     try { fs.unlinkSync(MPV_SOCKET); } catch (e) {}
   }
-});
+};
 
-// =========================================================================
-// NORMALIZACIÓN & PARSER DE METADATOS ID3
-// =========================================================================
+process.on('exit', cleanupProcesses);
+process.on('SIGINT', () => { cleanupProcesses(); process.exit(0); });
+process.on('SIGTERM', () => { cleanupProcesses(); process.exit(0); });
+
+// Normalizador ID3
 const isNumeric = (str) => typeof str === 'string' && /^\d+$/.test(str.trim());
 
 const normalizeGenre = (rawGenre) => {
@@ -252,23 +238,20 @@ const scanMusicDirectory = (dirPath, arrayOfFiles = []) => {
   return arrayOfFiles;
 };
 
-const quickParseTrack = (relativePath, index) => {
+const quickParseTrack = (relativePath) => {
   const rawName = path.basename(relativePath, path.extname(relativePath));
   const folderParts = path.dirname(relativePath).split(path.sep).filter(p => p && p !== '.');
-  
   let artist = folderParts.length > 0 ? folderParts[0] : 'Varios';
   if (isNumeric(artist)) artist = 'Varios';
 
   let title = rawName.replace(/^\d+[\s\.\-_]+/, '').trim();
   const parts = rawName.split(/\s*-\s*/);
-
   if (parts.length > 1 && !isNumeric(parts[0])) {
     artist = parts[0].trim();
     title = parts.slice(1).join(' - ').replace(/^\d+[\s\.\-_]+/, '').trim();
   }
 
   return {
-    id: index + 1,
     path: relativePath,
     title: title || rawName,
     artist: artist || 'Varios',
@@ -283,7 +266,6 @@ const parseTrackID3 = async (relativePath) => {
   const absolutePath = path.join(MUSIC_DIR, relativePath);
   const rawName = path.basename(relativePath, path.extname(relativePath));
   const folderParts = path.dirname(relativePath).split(path.sep).filter(p => p && p !== '.');
-
   let fallbackArtist = folderParts.length > 0 ? folderParts[0] : 'Varios';
   if (isNumeric(fallbackArtist)) fallbackArtist = 'Varios';
 
@@ -298,22 +280,11 @@ const parseTrackID3 = async (relativePath) => {
     if (!artist || !title) {
       const cleanedFileName = rawName.replace(/^\d+[\s\.\-_]+/, '');
       const parts = rawName.split(/\s*-\s*/);
-
       if (!artist) {
-        if (parts.length > 1 && !isNumeric(parts[0])) {
-          artist = parts[0].trim();
-        } else {
-          artist = fallbackArtist;
-        }
+        artist = (parts.length > 1 && !isNumeric(parts[0])) ? parts[0].trim() : fallbackArtist;
       }
-
       if (!title) {
-        if (parts.length > 1) {
-          const possibleTitle = parts.slice(1).join(' - ').replace(/^\d+[\s\.\-_]+/, '').trim();
-          title = possibleTitle || cleanedFileName;
-        } else {
-          title = cleanedFileName || rawName;
-        }
+        title = (parts.length > 1) ? parts.slice(1).join(' - ').replace(/^\d+[\s\.\-_]+/, '').trim() : cleanedFileName;
       }
     }
 
@@ -344,43 +315,9 @@ const parseTrackID3 = async (relativePath) => {
   }
 };
 
-// =========================================================================
-// ESTADO GLOBAL DEL SERVIDOR
-// =========================================================================
-let masterLibrary = [];
-let activeQueue = [];
-let currentIndex = 0;
-let isShuffle = false;
-let repeatMode = 'all'; // 'off' | 'all' | 'one'
-let currentFilterMode = 'all';
-let selectedArtist = null;
-let selectedGenre = null;
-let selectedPlaylistId = null;
-let currentVolume = 10;
-let isPlaying = false;
-
-let playStartTime = 0;
-let elapsedOffset = 0;
-
-let currentTrackData = {
-  path: null,
-  title: null,
-  artist: null,
-  album: null,
-  genre: 'Varios',
-  duration: 0
-};
-
-// Sleep Timer
-let sleepTimerInterval = null;
-let sleepTimerEndsAt = 0;
-let sleepTimerBaseVolume = 10;
-let isFadingOut = false;
-
+// Estado y Colas
 const getSleepTimerState = () => {
-  if (!sleepTimerEndsAt || sleepTimerEndsAt <= Date.now()) {
-    return { active: false, remainingSeconds: 0 };
-  }
+  if (!sleepTimerEndsAt || sleepTimerEndsAt <= Date.now()) return { active: false, remainingSeconds: 0 };
   return {
     active: true,
     remainingSeconds: Math.max(0, Math.ceil((sleepTimerEndsAt - Date.now()) / 1000)),
@@ -391,14 +328,12 @@ const getSleepTimerState = () => {
 const startSleepTimer = (minutes) => {
   cancelSleepTimer(false);
   if (!minutes || minutes <= 0) return;
-
   sleepTimerBaseVolume = currentVolume;
   sleepTimerEndsAt = Date.now() + (minutes * 60 * 1000);
   isFadingOut = false;
 
   sleepTimerInterval = setInterval(() => {
     const remainingSecs = Math.ceil((sleepTimerEndsAt - Date.now()) / 1000);
-
     if (remainingSecs <= 60 && remainingSecs > 0) {
       isFadingOut = true;
       const ratio = remainingSecs / 60;
@@ -412,7 +347,6 @@ const startSleepTimer = (minutes) => {
       sleepTimerInterval = null;
       sleepTimerEndsAt = 0;
       isFadingOut = false;
-
       sendMpvCommand(['set_property', 'pause', true]);
       isPlaying = false;
       currentVolume = sleepTimerBaseVolume;
@@ -451,14 +385,17 @@ const shuffleArray = (array) => {
 
 const rebuildQueue = (startPath = null) => {
   let list = [];
+  const favorites = dbService.getFavorites();
+
   if (currentFilterMode === 'favorites') {
-    list = masterLibrary.filter(t => favoritesList.includes(t.path));
+    list = masterLibrary.filter(t => favorites.includes(t.path));
   } else if (currentFilterMode === 'artist' && selectedArtist) {
     list = masterLibrary.filter(t => t.artist === selectedArtist);
   } else if (currentFilterMode === 'genre' && selectedGenre) {
     list = masterLibrary.filter(t => t.genre === selectedGenre);
   } else if (currentFilterMode === 'playlist' && selectedPlaylistId) {
-    const pl = playlistsList.find(p => p.id === selectedPlaylistId);
+    const playlists = dbService.getPlaylists();
+    const pl = playlists.find(p => p.id === selectedPlaylistId);
     if (pl && pl.tracks) {
       list = pl.tracks.map(p => masterLibrary.find(t => t.path === p)).filter(Boolean);
     } else {
@@ -492,8 +429,8 @@ const broadcastState = () => {
     currentTrack: currentTrackData,
     queue: activeQueue,
     masterLibrary,
-    favorites: favoritesList,
-    playlists: playlistsList,
+    favorites: dbService.getFavorites(),
+    playlists: dbService.getPlaylists(),
     eqSettings,
     playStartTime,
     elapsedOffset,
@@ -501,58 +438,48 @@ const broadcastState = () => {
   });
 };
 
-// Inicialización Asíncrona Progresiva
+// Inicialización SQLite WASM
 const initLibrary = async () => {
   const diskFiles = scanMusicDirectory(MUSIC_DIR);
-  let cachedLibrary = loadJSON(CACHE_FILE, []);
+  const dbCount = dbService.getTracksCount();
 
-  if (cachedLibrary.length === diskFiles.length && diskFiles.length > 0) {
-    masterLibrary = cachedLibrary;
+  if (dbCount === diskFiles.length && diskFiles.length > 0) {
+    masterLibrary = dbService.getAllTracks();
     rebuildQueue();
     broadcastState();
-    console.log(`⚡ [Cache v2] ${masterLibrary.length} canciones cargadas al instante.`);
+    console.log(`⚡ [SQLite Core] ${masterLibrary.length} pistas cargadas desde SQLite en 2ms.`);
     return;
   }
 
-  // Carga rápida inicial
-  masterLibrary = diskFiles.map((file, idx) => quickParseTrack(file, idx));
+  console.log(`⏳ [SQLite Sync] Sincronizando ${diskFiles.length} archivos con la base de datos...`);
+  masterLibrary = diskFiles.map(file => dbService.getTrackByPath(file) || quickParseTrack(file));
   rebuildQueue();
   broadcastState();
 
-  // Enriquecimiento ID3 por lotes
   const enrichedList = [];
-  const BATCH_SIZE = 25;
-
+  const BATCH_SIZE = 30;
   for (let i = 0; i < diskFiles.length; i += BATCH_SIZE) {
     const batch = diskFiles.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.all(batch.map(file => parseTrackID3(file)));
-    
-    batchResults.forEach((track, bIdx) => {
-      enrichedList.push({
-        id: i + bIdx + 1,
-        ...track
-      });
-    });
+    enrichedList.push(...batchResults);
   }
 
-  masterLibrary = enrichedList;
-  saveJSON(CACHE_FILE, masterLibrary);
+  dbService.saveTracksBatch(enrichedList);
+  masterLibrary = dbService.getAllTracks();
   rebuildQueue();
   broadcastState();
-  console.log(`✅ [Indexación Completa] ${masterLibrary.length} pistas con tags ID3.`);
+  console.log(`✅ [SQLite Sync Completo] ${masterLibrary.length} pistas guardadas e indexadas en SQLite.`);
 };
 
 initLibrary();
 
-// Reproducción y Control de Pistas
 const playCurrentTrack = async () => {
   if (!activeQueue.length) return;
   if (currentIndex < 0 || currentIndex >= activeQueue.length) currentIndex = 0;
 
   const track = activeQueue[currentIndex];
   const absolutePath = path.join(MUSIC_DIR, track.path);
-
-  const meta = await parseTrackID3(track.path);
+  const meta = dbService.getTrackByPath(track.path) || (await parseTrackID3(track.path));
   currentTrackData = meta;
   elapsedOffset = 0;
 
@@ -566,19 +493,16 @@ const playCurrentTrack = async () => {
 
 const nextTrack = (isManual = false) => {
   if (!activeQueue.length) return;
-
   if (!isManual && repeatMode === 'one') {
     playCurrentTrack();
     return;
   }
-
   if (!isManual && repeatMode === 'off' && currentIndex === activeQueue.length - 1) {
     sendMpvCommand(['set_property', 'pause', true]);
     isPlaying = false;
     broadcastState();
     return;
   }
-
   currentIndex = (currentIndex + 1) % activeQueue.length;
   playCurrentTrack();
 };
@@ -589,9 +513,7 @@ const prevTrack = () => {
   playCurrentTrack();
 };
 
-// =========================================================================
-// RUTAS REST
-// =========================================================================
+// Endpoints REST
 app.get('/api/cover', async (req, res) => {
   const relativePath = req.query.path;
   if (!relativePath) return res.status(400).send('Falta ruta');
@@ -600,12 +522,9 @@ app.get('/api/cover', async (req, res) => {
   try {
     const metadata = await musicMetadata.parseFile(absolutePath);
     const picture = metadata.common.picture?.[0];
-
     if (picture && picture.data) {
       let mime = picture.format || 'image/jpeg';
       if (!mime.includes('/')) mime = `image/${mime === 'jpg' ? 'jpeg' : mime}`;
-      if (mime === 'image/jpg') mime = 'image/jpeg';
-
       res.set('Content-Type', mime);
       res.set('Cache-Control', 'public, max-age=86400');
       return res.send(picture.data);
@@ -620,38 +539,23 @@ app.post('/api/upload', upload.array('audioFiles', 100), async (req, res) => {
       return res.status(400).json({ error: 'No se subió ningún archivo' });
     }
 
-    console.log(`📥 [Upload] ${req.files.length} archivo(s) recibido(s).`);
-    const newIndexedTracks = [];
-
+    console.log(`📥 [Upload] Procesando ${req.files.length} archivo(s)...`);
+    const newTracks = [];
     for (let i = 0; i < req.files.length; i++) {
       const file = req.files[i];
       const relPath = path.relative(MUSIC_DIR, file.path);
       const parsedMeta = await parseTrackID3(relPath);
-
-      const existingIdx = masterLibrary.findIndex(t => t.path === relPath);
-      const trackObj = {
-        id: existingIdx !== -1 ? masterLibrary[existingIdx].id : masterLibrary.length + newIndexedTracks.length + 1,
-        ...parsedMeta
-      };
-
-      if (existingIdx !== -1) {
-        masterLibrary[existingIdx] = trackObj;
-      } else {
-        newIndexedTracks.push(trackObj);
-      }
+      newTracks.push(parsedMeta);
     }
 
-    if (newIndexedTracks.length > 0) {
-      masterLibrary.push(...newIndexedTracks);
-    }
-
-    saveJSON(CACHE_FILE, masterLibrary);
+    dbService.saveTracksBatch(newTracks);
+    masterLibrary = dbService.getAllTracks();
     rebuildQueue();
     broadcastState();
 
     res.json({
       success: true,
-      message: `${req.files.length} archivo(s) subido(s) con éxito`,
+      message: `${req.files.length} archivo(s) guardados en SQLite con éxito`,
       uploadedCount: req.files.length
     });
   } catch (err) {
@@ -664,8 +568,8 @@ app.get('/api/library', (req, res) => {
   res.json({
     masterLibrary,
     activeQueue,
-    favorites: favoritesList,
-    playlists: playlistsList,
+    favorites: dbService.getFavorites(),
+    playlists: dbService.getPlaylists(),
     currentTrack: currentTrackData,
     isPlaying,
     repeatMode,
@@ -676,9 +580,7 @@ app.get('/api/library', (req, res) => {
   });
 });
 
-// =========================================================================
-// WEBSOCKETS (SOCKET.IO)
-// =========================================================================
+// Socket.IO
 io.on('connection', (socket) => {
   socket.emit('state_changed', {
     isPlaying,
@@ -692,8 +594,8 @@ io.on('connection', (socket) => {
     currentTrack: currentTrackData,
     queue: activeQueue,
     masterLibrary,
-    favorites: favoritesList,
-    playlists: playlistsList,
+    favorites: dbService.getFavorites(),
+    playlists: dbService.getPlaylists(),
     eqSettings,
     playStartTime,
     elapsedOffset,
@@ -710,7 +612,6 @@ io.on('connection', (socket) => {
     playCurrentTrack();
   });
 
-  // --- REPRODUCIR A CONTINUACIÓN (PLAY NEXT) ---
   socket.on('play_next', (targetPath) => {
     const trackObj = masterLibrary.find(t => t.path === targetPath);
     if (!trackObj) return;
@@ -725,8 +626,6 @@ io.on('connection', (socket) => {
       }
       activeQueue.splice(currentIndex + 1, 0, trackObj);
     }
-
-    console.log(`⏭️ [Play Next] "${trackObj.title}" programada para sonar después.`);
     broadcastState();
   });
 
@@ -766,7 +665,7 @@ io.on('connection', (socket) => {
 
   socket.on('set_eq', (newEq) => {
     eqSettings = newEq;
-    saveJSON(EQ_FILE, eqSettings);
+    dbService.setSetting('eq_settings', eqSettings);
     applyEqualizerToMpv();
     broadcastState();
   });
@@ -781,13 +680,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('toggle_favorite', (trackPath) => {
-    if (favoritesList.includes(trackPath)) {
-      favoritesList = favoritesList.filter(p => p !== trackPath);
-    } else {
-      favoritesList.push(trackPath);
-    }
-    saveJSON(FAVORITES_FILE, favoritesList);
-
+    dbService.toggleFavorite(trackPath);
     if (currentFilterMode === 'favorites') {
       rebuildQueue(currentTrackData.path);
     }
@@ -796,19 +689,13 @@ io.on('connection', (socket) => {
 
   socket.on('create_playlist', (name) => {
     if (!name || !name.trim()) return;
-    playlistsList.push({
-      id: `pl_${Date.now()}`,
-      name: name.trim(),
-      tracks: [],
-      createdAt: Date.now()
-    });
-    saveJSON(PLAYLISTS_FILE, playlistsList);
+    const plId = `pl_${Date.now()}`;
+    dbService.createPlaylist(plId, name.trim(), Date.now());
     broadcastState();
   });
 
   socket.on('delete_playlist', (playlistId) => {
-    playlistsList = playlistsList.filter(p => p.id !== playlistId);
-    saveJSON(PLAYLISTS_FILE, playlistsList);
+    dbService.deletePlaylist(playlistId);
     if (currentFilterMode === 'playlist' && selectedPlaylistId === playlistId) {
       currentFilterMode = 'all';
       selectedPlaylistId = null;
@@ -818,15 +705,11 @@ io.on('connection', (socket) => {
   });
 
   socket.on('add_to_playlist', ({ playlistId, trackPath }) => {
-    const pl = playlistsList.find(p => p.id === playlistId);
-    if (pl && !pl.tracks.includes(trackPath)) {
-      pl.tracks.push(trackPath);
-      saveJSON(PLAYLISTS_FILE, playlistsList);
-      if (currentFilterMode === 'playlist' && selectedPlaylistId === playlistId) {
-        rebuildQueue(currentTrackData.path);
-      }
-      broadcastState();
+    dbService.addTrackToPlaylist(playlistId, trackPath);
+    if (currentFilterMode === 'playlist' && selectedPlaylistId === playlistId) {
+      rebuildQueue(currentTrackData.path);
     }
+    broadcastState();
   });
 
   socket.on('set_volume', (level) => {
