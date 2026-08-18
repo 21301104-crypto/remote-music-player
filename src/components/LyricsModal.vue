@@ -1,348 +1,427 @@
 <!-- src/components/LyricsModal.vue -->
 <script setup>
-import { ref, watch, nextTick } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import { useLyricsParser } from '../composables/useLyricsParser';
 
 const props = defineProps({
-  isOpen: Boolean,
-  currentTrack: Object,
-  currentTime: Number,
-  coverUrl: String,
-  lyricsData: Object,
-  syncProgress: Object
+  isOpen: { type: Boolean, default: false },
+  currentTrack: { type: Object, default: () => ({}) },
+  currentTime: { type: Number, default: 0 },
+  coverUrl: { type: String, default: null },
+  lyricsData: { type: Object, default: null },
+  syncProgress: { type: Object, default: null }
 });
 
-const emit = defineEmits(['close', 'seek', 'start-sync']);
+const emit = defineEmits(['close', 'seek', 'startSync']);
 
-const syncedLyricsRef = ref('');
-const currentTimeRef = ref(0);
-const scrollContainerRef = ref(null);
+const { parseLRC, getActiveLineIndex } = useLyricsParser();
+const lyricsContainerRef = ref(null);
+const autoScrollEnabled = ref(true);
 
-watch(() => props.lyricsData, (newVal) => {
-  syncedLyricsRef.value = newVal?.syncedLyrics || '';
-}, { immediate: true });
-
-watch(() => props.currentTime, (newVal) => {
-  currentTimeRef.value = newVal || 0;
+const parsedLines = computed(() => {
+  if (!props.lyricsData?.syncedLyrics) return [];
+  return parseLRC(props.lyricsData.syncedLyrics);
 });
 
-const { parsedLyrics, activeLineIndex } = useLyricsParser(syncedLyricsRef, currentTimeRef);
+const currentLineIndex = computed(() => {
+  if (!parsedLines.value.length) return -1;
+  return getActiveLineIndex(parsedLines.value, props.currentTime);
+});
 
-// Auto-Scroll Suave hacia la línea activa
-watch(activeLineIndex, async (newIdx) => {
-  if (newIdx === -1 || !props.isOpen) return;
+// Sincronización automática de scroll al cambiar la línea activa
+watch(currentLineIndex, async (newIdx) => {
+  if (newIdx === -1 || !autoScrollEnabled.value || !lyricsContainerRef.value) return;
+
   await nextTick();
-  const el = document.getElementById(`lyric-line-${newIdx}`);
-  if (el) {
-    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const activeEl = lyricsContainerRef.value.querySelector('.vintage-lyric-line.is-active');
+  if (activeEl) {
+    activeEl.scrollIntoView({
+      behavior: 'smooth',
+      block: 'center'
+    });
   }
 });
 
-const handleLineClick = (time) => {
-  emit('seek', time);
+const handleLineClick = (timeSec) => {
+  emit('seek', timeSec);
+};
+
+const handleUserScroll = () => {
+  autoScrollEnabled.value = false;
+  setTimeout(() => {
+    autoScrollEnabled.value = true;
+  }, 4000);
 };
 </script>
 
 <template>
-  <transition name="lyrics-modal-fade">
-    <div v-if="isOpen" class="lyrics-viewport">
-      <!-- Fondo Cinemático con Blur Sincronizado -->
-      <div class="lyrics-backdrop" v-if="coverUrl">
-        <img :src="coverUrl" alt="" class="lyrics-blur-art" />
-        <div class="lyrics-overlay-mask"></div>
-      </div>
+  <teleport to="body">
+    <transition name="vintage-modal-fade">
+      <div v-if="isOpen" class="vintage-lyrics-overlay" @click.self="emit('close')">
+        <div class="vintage-lyrics-card">
+          <!-- Tornillos Decorativos -->
+          <span class="chassis-bolt bolt-tl"></span>
+          <span class="chassis-bolt bolt-tr"></span>
+          <span class="chassis-bolt bolt-bl"></span>
+          <span class="chassis-bolt bolt-br"></span>
 
-      <!-- Cabecera Superior -->
-      <header class="lyrics-header">
-        <div class="header-track-info">
-          <span class="header-badge">LETRAS EN VIVO</span>
-          <h4 class="track-title-head">{{ currentTrack.title }}</h4>
-          <span class="track-artist-head">{{ currentTrack.artist }}</span>
-        </div>
+          <!-- Cabecera -->
+          <header class="lyrics-header-panel">
+            <div class="header-metadata">
+              <span class="vintage-tag">LETRAS EN VIVO • ANALOG SESSION</span>
+              <h2 class="vintage-song-title">{{ currentTrack.title || 'Sin Título' }}</h2>
+              <p class="vintage-song-artist">
+                {{ currentTrack.artist || 'Artista Desconocido' }}
+                <span v-if="currentTrack.album" class="album-tag">• {{ currentTrack.album }}</span>
+              </p>
+            </div>
 
-        <div class="header-buttons">
-          <!-- Botón de Sincronización Masiva -->
-          <button 
-            class="btn-sync-action"
-            @click="emit('start-sync')"
-            title="Descargar letras para todo el catálogo"
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
-            </svg>
-            <span>Sincronizar Todas</span>
-          </button>
+            <button class="btn-vintage-modal-close" @click="emit('close')" title="Cerrar">✕</button>
+          </header>
 
-          <button class="btn-close-lyrics" @click="emit('close')">✕</button>
-        </div>
-      </header>
+          <!-- Tira de Control -->
+          <div class="lyrics-control-strip">
+            <div class="sync-indicator-group">
+              <span class="sync-amber-lamp" :class="{ 'is-active-lamp': parsedLines.length > 0 }"></span>
+              <span class="sync-status-label">
+                {{ parsedLines.length > 0 ? `${parsedLines.length} LÍNEAS SINCRONIZADAS` : (lyricsData?.plainLyrics ? 'LETRA ESTÁTICA' : 'SIN REGISTRO LOCAL') }}
+              </span>
+            </div>
 
-      <!-- Banner de Progreso de Sincronización en Lote -->
-      <div v-if="syncProgress && syncProgress.percentage < 100" class="sync-progress-banner">
-        <div class="sync-text-row">
-          <span>Descargando letras... {{ syncProgress.processed }}/{{ syncProgress.total }}</span>
-          <span>{{ syncProgress.percentage }}%</span>
-        </div>
-        <div class="sync-rail">
-          <div class="sync-fill" :style="{ width: `${syncProgress.percentage}%` }"></div>
-        </div>
-      </div>
-
-      <!-- Contenedor Principal de Letras -->
-      <div class="lyrics-scroll-box" ref="scrollContainerRef">
-        <!-- Caso 1: Letras Sincronizadas (.lrc) -->
-        <div v-if="parsedLyrics.length > 0" class="lyrics-stream">
-          <p
-            v-for="(line, idx) in parsedLyrics"
-            :key="line.id"
-            :id="`lyric-line-${idx}`"
-            class="lyric-line"
-            :class="{ 
-              'is-active': idx === activeLineIndex,
-              'is-passed': idx < activeLineIndex,
-              'is-future': idx > activeLineIndex
-            }"
-            @click="handleLineClick(line.time)"
-          >
-            {{ line.text }}
-          </p>
-        </div>
-
-        <!-- Caso 2: Letra Plana (Sin timestamps) -->
-        <div v-else-if="lyricsData?.plainLyrics" class="lyrics-plain-box">
-          <p v-for="(paragraph, pIdx) in lyricsData.plainLyrics.split('\n')" :key="pIdx">
-            {{ paragraph }}
-          </p>
-        </div>
-
-        <!-- Caso 3: Sin Letras Disponibles -->
-        <div v-else class="lyrics-empty-state">
-          <div class="empty-icon-ring">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M9 18V5l12-2v13"></path>
-              <circle cx="6" cy="18" r="3"></circle>
-              <circle cx="18" cy="16" r="3"></circle>
-            </svg>
+            <button class="btn-vintage-sync-action" @click="emit('startSync')" title="Sincronizar base de datos SQLite">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polyline points="23 4 23 10 17 10"></polyline>
+                <polyline points="1 20 1 14 7 14"></polyline>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+              </svg>
+              <span>SINCRONIZAR DB</span>
+            </button>
           </div>
-          <h3>Letras no disponibles</h3>
-          <p>Esta pista no tiene letra en la base de datos local. Conecta el teléfono a Wi-Fi para obtenerla automáticamente o pulsa "Sincronizar Todas".</p>
+
+          <!-- Barra de Progreso de Sincronización -->
+          <div v-if="syncProgress && syncProgress.percentage < 100" class="sync-progress-track">
+            <div class="sync-progress-fill" :style="{ width: `${syncProgress.percentage}%` }"></div>
+          </div>
+
+          <!-- Cavidad de Lectura -->
+          <div 
+            class="lyrics-scroll-cavity" 
+            ref="lyricsContainerRef" 
+            @wheel="handleUserScroll" 
+            @touchstart="handleUserScroll"
+          >
+            <!-- 1. Letras Sincronizadas (.LRC) -->
+            <div v-if="parsedLines.length > 0" class="lines-flow-container">
+              <p
+                v-for="(line, idx) in parsedLines"
+                :key="idx"
+                class="vintage-lyric-line"
+                :class="{
+                  'is-active': idx === currentLineIndex,
+                  'is-past': idx < currentLineIndex
+                }"
+                @click="handleLineClick(line.time)"
+              >
+                {{ line.text || '♪ ♪ ♪' }}
+              </p>
+            </div>
+
+            <!-- 2. Letras Planas -->
+            <div v-else-if="lyricsData?.plainLyrics" class="plain-text-flow">
+              <p>{{ lyricsData.plainLyrics }}</p>
+            </div>
+
+            <!-- 3. Vacío -->
+            <div v-else class="empty-lyrics-notice">
+              <span class="empty-glyph">📜</span>
+              <p class="empty-headline">Letra no disponible en la base de datos local</p>
+              <p class="empty-sub">Presiona "SINCRONIZAR DB" para buscarla automáticamente.</p>
+            </div>
+          </div>
+
+          <!-- Pie del Modal -->
+          <footer class="lyrics-footer-panel">
+            <button 
+              class="btn-autoscroll-toggle" 
+              @click="autoScrollEnabled = true" 
+              :class="{ 'is-locked': autoScrollEnabled }"
+            >
+              <span class="led-marker"></span>
+              <span>SEGUIMIENTO AUTOMÁTICO</span>
+            </button>
+
+            <span class="tape-timer-readout">POSICIÓN: {{ Math.floor(currentTime) }}s</span>
+          </footer>
         </div>
       </div>
-    </div>
-  </transition>
+    </transition>
+  </teleport>
 </template>
 
 <style scoped>
-.lyrics-viewport {
+.vintage-lyrics-overlay {
   position: fixed;
   inset: 0;
-  background-color: #030712;
-  z-index: 250;
+  background: rgba(27, 22, 17, 0.82);
+  backdrop-filter: blur(5px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.vintage-lyrics-card {
+  position: relative;
+  width: 100%;
+  max-width: 620px;
+  background: #ded2be;
+  border: 3px solid #baa88f;
+  border-radius: 22px;
+  box-shadow: 
+    0 24px 50px rgba(0, 0, 0, 0.65),
+    inset 0 2px 4px rgba(255, 255, 255, 0.5);
   display: flex;
   flex-direction: column;
+  padding: 22px 24px;
   box-sizing: border-box;
-  padding: max(14px, env(safe-area-inset-top)) 20px max(24px, env(safe-area-inset-bottom)) 20px;
+  color: #1f1c18;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Georgia, serif;
 }
 
-.lyrics-backdrop {
+.chassis-bolt {
   position: absolute;
-  inset: 0;
-  z-index: 1;
-  overflow: hidden;
-  pointer-events: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #a89a83;
+  border: 1px solid #7d715e;
+  box-shadow: inset 0 1px 2px rgba(0,0,0,0.5);
 }
-.lyrics-blur-art {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  filter: blur(65px) brightness(0.28) saturate(220%);
-  transform: scale(1.4);
-}
-.lyrics-overlay-mask {
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at top, rgba(15, 23, 42, 0.4) 0%, rgba(3, 7, 18, 0.94) 100%);
-}
+.bolt-tl { top: 9px; left: 9px; }
+.bolt-tr { top: 9px; right: 9px; }
+.bolt-bl { bottom: 9px; left: 9px; }
+.bolt-br { bottom: 9px; right: 9px; }
 
-.lyrics-header {
-  position: relative;
-  z-index: 2;
+.lyrics-header-panel {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 12px;
+  border-bottom: 1.5px solid #baa88f;
 }
-.header-track-info {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.header-badge {
-  font-size: 0.6rem;
+.header-metadata { flex: 1; min-width: 0; padding-right: 14px; }
+.vintage-tag {
+  font-size: 0.64rem;
   font-weight: 900;
-  color: var(--theme-accent, #38bdf8);
-  letter-spacing: 0.6px;
-  margin-bottom: 2px;
+  letter-spacing: 0.8px;
+  color: #8b2616;
+  text-transform: uppercase;
 }
-.track-title-head {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 800;
-  color: #f8fafc;
+.vintage-song-title {
+  margin: 2px 0 3px 0;
+  font-size: 1.35rem;
+  font-weight: 900;
+  color: #1f1c18;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.track-artist-head {
-  font-size: 0.75rem;
-  color: #94a3b8;
+.vintage-song-artist {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: #5c5346;
 }
+.album-tag { color: #7d7262; font-weight: 700; }
 
-.header-buttons {
+.btn-vintage-modal-close {
+  background: #cfbeaa;
+  border: 1.5px solid #baa88f;
+  border-radius: 8px;
+  color: #1f1c18;
+  width: 34px;
+  height: 34px;
+  font-size: 0.95rem;
+  font-weight: 900;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 0 #9c8c77;
+  transition: all 0.1s ease;
 }
-.btn-sync-action {
+.btn-vintage-modal-close:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 #9c8c77;
+}
+
+.lyrics-control-strip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #cebeaa;
+  border: 1.5px solid #baa88f;
+  padding: 8px 12px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+}
+.sync-indicator-group { display: flex; align-items: center; gap: 8px; }
+.sync-amber-lamp {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #786c5c;
+  transition: all 0.3s ease;
+}
+.sync-amber-lamp.is-active-lamp {
+  background: #8b2616;
+  box-shadow: 0 0 6px #8b2616;
+}
+.sync-status-label {
+  font-size: 0.72rem;
+  font-weight: 900;
+  color: #1f1c18;
+  letter-spacing: 0.4px;
+}
+
+.btn-vintage-sync-action {
   display: flex;
   align-items: center;
   gap: 6px;
-  background: rgba(30, 41, 59, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #f8fafc;
-  padding: 6px 12px;
-  border-radius: 14px;
-  font-size: 0.7rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-.btn-sync-action svg { width: 13px; height: 13px; color: var(--theme-accent, #38bdf8); }
-
-.btn-close-lyrics {
-  background: rgba(255, 255, 255, 0.1);
+  background: #8b2616;
+  color: #ffffff;
   border: none;
-  color: #f8fafc;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  font-size: 0.9rem;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.72rem;
+  font-weight: 900;
   cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  box-shadow: 0 2px 4px rgba(139, 38, 22, 0.35);
+  transition: transform 0.1s ease;
 }
+.btn-vintage-sync-action svg { width: 13px; height: 13px; }
+.btn-vintage-sync-action:active { transform: scale(0.95); }
 
-.sync-progress-banner {
-  position: relative;
-  z-index: 2;
-  background: rgba(15, 23, 42, 0.85);
-  border: 1px solid var(--theme-accent, #38bdf8);
-  border-radius: 10px;
-  padding: 8px 12px;
-  margin-bottom: 10px;
-}
-.sync-text-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.7rem;
-  font-weight: 700;
-  color: #f8fafc;
-  margin-bottom: 4px;
-}
-.sync-rail {
+.sync-progress-track {
   width: 100%;
   height: 4px;
-  background: rgba(255, 255, 255, 0.1);
+  background: #c5b69f;
   border-radius: 2px;
+  margin-bottom: 12px;
   overflow: hidden;
 }
-.sync-fill {
+.sync-progress-fill {
   height: 100%;
-  background: var(--theme-accent, #38bdf8);
-  border-radius: 2px;
-  transition: width 0.2s ease;
+  background: #8b2616;
+  transition: width 0.2s linear;
 }
 
-.lyrics-scroll-box {
-  position: relative;
-  z-index: 2;
-  flex: 1;
+.lyrics-scroll-cavity {
+  background: #f2eadc;
+  border: 2.5px solid #baa88f;
+  border-radius: 16px;
+  box-shadow: inset 0 4px 10px rgba(0, 0, 0, 0.12);
+  height: 380px;
   overflow-y: auto;
-  scrollbar-width: none;
-  padding: 40px 0;
+  padding: 30px 20px;
+  box-sizing: border-box;
+  text-align: center;
+  scrollbar-width: thin;
+  scrollbar-color: #baa88f transparent;
 }
-.lyrics-scroll-box::-webkit-scrollbar { display: none; }
+.lyrics-scroll-cavity::-webkit-scrollbar { width: 6px; }
+.lyrics-scroll-cavity::-webkit-scrollbar-thumb { background: #baa88f; border-radius: 3px; }
 
-.lyrics-stream {
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-}
-
-.lyric-line {
+.lines-flow-container { display: flex; flex-direction: column; gap: 16px; }
+.vintage-lyric-line {
   margin: 0;
-  font-size: 1.35rem;
-  font-weight: 800;
-  line-height: 1.35;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #786c5c;
   cursor: pointer;
-  transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
-  transform-origin: left center;
+  padding: 8px 14px;
+  border-radius: 10px;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  user-select: none;
 }
-.lyric-line.is-passed {
-  color: rgba(255, 255, 255, 0.22);
-  transform: scale(0.95);
-  filter: blur(0.6px);
+.vintage-lyric-line:hover {
+  color: #8b2616;
+  background: rgba(139, 38, 22, 0.08);
 }
-.lyric-line.is-active {
-  color: #ffffff;
-  transform: scale(1.08);
-  text-shadow: 0 4px 18px var(--theme-glow, rgba(56, 189, 248, 0.6));
-  filter: blur(0);
+.vintage-lyric-line.is-active {
+  font-size: 1.35rem;
+  font-weight: 900;
+  color: #8b2616;
+  transform: scale(1.04);
+  text-shadow: 0 1px 2px rgba(139, 38, 22, 0.2);
 }
-.lyric-line.is-future {
-  color: rgba(255, 255, 255, 0.42);
-  transform: scale(0.97);
+.vintage-lyric-line.is-past {
+  color: #423c34;
+  opacity: 0.88;
 }
 
-.lyrics-plain-box {
-  font-size: 1.1rem;
+.plain-text-flow p {
+  white-space: pre-line;
+  font-size: 1rem;
   line-height: 1.8;
-  color: #cbd5e1;
-  font-weight: 600;
-  text-align: center;
+  color: #1f1c18;
+  font-weight: 700;
 }
 
-.lyrics-empty-state {
+.empty-lyrics-notice {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  text-align: center;
   height: 100%;
-  color: #94a3b8;
-  padding: 0 20px;
+  color: #5c5346;
 }
-.empty-icon-ring {
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.05);
+.empty-glyph { font-size: 2.2rem; margin-bottom: 8px; }
+.empty-headline { margin: 0 0 4px 0; font-size: 0.95rem; font-weight: 900; color: #1f1c18; }
+.empty-sub { margin: 0; font-size: 0.8rem; font-weight: 700; color: #7d7262; }
+
+.lyrics-footer-panel {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1.5px solid #baa88f;
+}
+.btn-autoscroll-toggle {
   display: flex;
   align-items: center;
-  justify-content: center;
-  margin-bottom: 12px;
+  gap: 6px;
+  background: #cebeaa;
+  border: 1.5px solid #baa88f;
+  border-radius: 8px;
+  color: #1f1c18;
+  padding: 6px 12px;
+  font-size: 0.7rem;
+  font-weight: 900;
+  cursor: pointer;
 }
-.empty-icon-ring svg { width: 28px; height: 28px; color: #64748b; }
-.lyrics-empty-state h3 { margin: 0 0 6px 0; color: #f8fafc; font-size: 1.1rem; font-weight: 800; }
-.lyrics-empty-state p { margin: 0; font-size: 0.8rem; line-height: 1.5; max-width: 320px; }
+.led-marker {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #8b2616;
+}
+.btn-autoscroll-toggle.is-locked {
+  background: #efe7d8;
+  border-color: #8b2616;
+  color: #8b2616;
+}
+.tape-timer-readout {
+  font-size: 0.74rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #4a4237;
+}
 
-.lyrics-modal-fade-enter-active, .lyrics-modal-fade-leave-active {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.lyrics-modal-fade-enter-from, .lyrics-modal-fade-leave-to {
-  opacity: 0;
-  transform: scale(0.96);
-}
+.vintage-modal-fade-enter-active, .vintage-modal-fade-leave-active { transition: all 0.25s ease-out; }
+.vintage-modal-fade-enter-from, .vintage-modal-fade-leave-to { opacity: 0; transform: scale(0.96); }
 </style>

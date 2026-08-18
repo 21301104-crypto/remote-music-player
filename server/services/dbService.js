@@ -114,6 +114,11 @@ export const dbService = {
     return null;
   },
 
+  getTracksByAlbum(albumName) {
+  const stmt = this.db.prepare('SELECT * FROM tracks WHERE album = ? ORDER BY title ASC');
+  return stmt.all(albumName);
+},
+
   saveTracksBatch: (tracks) => {
     if (!tracks || !tracks.length) return;
     db.run('BEGIN TRANSACTION');
