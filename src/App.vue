@@ -145,8 +145,15 @@ const playNext = (track, event) => {
 };
 
 const togglePlay = () => socket.emit('toggle_play');
-const nextTrack = () => { imageError.value = false; socket.emit('next'); };
-const prevTrack = () => { imageError.value = false; socket.emit('prev'); };
+const nextTrack = () => {
+  imageError.value = false;
+  socket.emit('next');
+};
+const prevTrack = () => {
+  imageError.value = false;
+  socket.emit('prev');
+};
+
 const toggleShuffle = () => socket.emit('toggle_shuffle');
 const toggleRepeat = () => socket.emit('toggle_repeat');
 const seekAudio = (targetSec) => socket.emit('seek_audio', targetSec);
@@ -361,6 +368,7 @@ const startProgressTicker = () => {
 
 onMounted(() => {
   startProgressTicker();
+
   socket.on('connect', () => { isConnected.value = true; });
   socket.on('disconnect', () => { isConnected.value = false; });
 
@@ -424,7 +432,9 @@ onUnmounted(() => {
     </transition>
 
     <div class="app-responsive-container">
-      <!-- PLAYER DECK CON VINILO GIRATORIO -->
+      <!-- ================================================================= -->
+      <!-- COLUMNA 1: PLAYER DECK CON VINILO GIRATORIO                       -->
+      <!-- ================================================================= -->
       <aside class="sidebar-panel">
         <header class="navbar">
           <div class="brand">
@@ -498,7 +508,7 @@ onUnmounted(() => {
               </button>
             </div>
 
-            <!-- Vinilo Giratorio -->
+            <!-- Vinilo Giratorio Hardware-Accelerated -->
             <div class="vinyl-deck" @click="openLyricsModal" title="Toca para ver letras">
               <div class="vinyl-disc" :class="{ 'is-spinning': isPlaying }">
                 <div class="vinyl-grooves"></div>
@@ -593,7 +603,9 @@ onUnmounted(() => {
         </section>
       </aside>
 
-      <!-- EXPLORADOR & LISTA DE CANCIONES -->
+      <!-- ================================================================= -->
+      <!-- COLUMNA 2: CATEGORÍAS, LISTA & BÚSQUEDA INTELIGENTE               -->
+      <!-- ================================================================= -->
       <main class="main-content-panel">
         <div class="category-toggle">
           <button class="toggle-tab" :class="{ active: filterCategoryTab === 'artists' }" @click="filterCategoryTab = 'artists'">
@@ -1007,7 +1019,7 @@ onUnmounted(() => {
 }
 .fav-deck-btn svg { width: 16px; height: 16px; }
 
-/* VINILO GIRATORIO */
+/* VINILO GIRATORIO A 60 FPS */
 .vinyl-deck {
   width: 190px;
   height: 190px;
