@@ -54,7 +54,12 @@ export const getLibrary = (req, res) => {
 };
 
 export const searchTracks = (req, res) => {
-  const query = req.query.q || '';
-  const results = dbService.searchTracks(query);
-  res.json(results);
+  try {
+    const query = req.query.q || '';
+    const results = dbService.searchTracks(query);
+    res.json(results);
+  } catch (err) {
+    console.error('[Search Controller Error]:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 };

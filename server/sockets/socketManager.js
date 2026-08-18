@@ -9,13 +9,17 @@ export const initSocketManager = (httpServer) => {
     maxHttpBufferSize: 1e8
   });
 
-  // Enlazar la difusión reactiva al callback de la máquina de estados
   playbackService.setNotifyCallback(() => {
     io.emit('state_changed', playbackService.getState());
   });
 
   io.on('connection', (socket) => {
+    console.log(`📱 [WebSocket] Cliente conectado desde IP: ${socket.handshake.address} (Socket ID: ${socket.id})`);
     registerAudioSocketHandlers(io, socket);
+
+    socket.on('disconnect', () => {
+      console.log(`🔌 [WebSocket] Cliente desconectado (Socket ID: ${socket.id})`);
+    });
   });
 
   return io;

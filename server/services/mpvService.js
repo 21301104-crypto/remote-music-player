@@ -8,6 +8,18 @@ let mpvProcess = null;
 let mpvSocketClient = null;
 let isMpvReady = false;
 let onEofCallback = null;
+const commandQueue = [];
+
+const flushCommandQueue = () => {
+  while (commandQueue.length > 0 && isMpvReady && mpvSocketClient) {
+    const cmd = commandQueue.shift();
+    try {
+      mpvSocketClient.write(JSON.stringify({ command: cmd }) + '\n');
+    } catch (err) {
+      console.error('❌ [MPV Flush Error]:', err.message);
+    }
+  }
+};
 
 export const mpvService = {
   start: (onEof) => {
@@ -33,13 +45,14 @@ export const mpvService = {
 
     const connectSocket = () => {
       if (!fs.existsSync(MPV_SOCKET)) {
-        setTimeout(connectSocket, 200);
+        setTimeout(connectSocket, 150);
         return;
       }
 
       mpvSocketClient = net.connect(MPV_SOCKET, () => {
-        console.log('✅ [MPV Service] Conexión IPC lista.');
+        console.log('✅ [MPV Service] Conexión IPC lista y comunicando.');
         isMpvReady = true;
+        flushCommandQueue();
       });
 
       mpvSocketClient.on('data', (data) => {
@@ -56,24 +69,30 @@ export const mpvService = {
 
       mpvSocketClient.on('error', () => {
         isMpvReady = false;
-        setTimeout(connectSocket, 500);
+        setTimeout(connectSocket, 400);
       });
     };
 
-    setTimeout(connectSocket, 300);
+    setTimeout(connectSocket, 200);
   },
 
   sendCommand: (commandArray) => {
-    if (!mpvSocketClient || !isMpvReady) return;
+    if (!isMpvReady || !mpvSocketClient) {
+      commandQueue.push(commandArray);
+      return;
+    }
     try {
       mpvSocketClient.write(JSON.stringify({ command: commandArray }) + '\n');
     } catch (err) {
-      console.error('[MPV IPC Error]:', err.message);
+      console.error('❌ [MPV IPC Error]:', err.message);
+      commandQueue.push(commandArray);
     }
   },
 
   loadFile: (filePath) => {
+    console.log(`🎵 [MPV IPC] Transmitiendo archivo a mpv: ${filePath}`);
     mpvService.sendCommand(['loadfile', filePath, 'replace']);
+    mpvService.sendCommand(['set_property', 'pause', false]);
   },
 
   setPause: (pause) => {

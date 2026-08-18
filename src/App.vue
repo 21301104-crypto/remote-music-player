@@ -9,14 +9,18 @@ import EqualizerModal from './components/EqualizerModal.vue';
 import UploaderModal from './components/UploaderModal.vue';
 import LyricsModal from './components/LyricsModal.vue';
 
-// 1. Conexión Backend
+// =========================================================================
+// 1. CONFIGURACIÓN DE RED & SOCKET.IO
+// =========================================================================
 const BACKEND_URL = import.meta.env.DEV
   ? `http://${window.location.hostname}:3000`
   : window.location.origin;
 
 const socket = io(BACKEND_URL);
 
-// 2. Estados Reactivos del Sistema
+// =========================================================================
+// 2. ESTADOS REACTIVOS DEL SISTEMA
+// =========================================================================
 const isConnected = ref(false);
 const isSleepTimerModalOpen = ref(false);
 const isPlaylistModalOpen = ref(false);
@@ -29,7 +33,7 @@ const lyricsSyncProgress = ref(null);
 const playlistModalMode = ref('create');
 const selectedTrackForPlaylist = ref(null);
 
-// Toast Notification
+// Sistema de Notificaciones Toast
 const toastMessage = ref('');
 let toastTimer = null;
 const showToast = (msg) => {
@@ -38,7 +42,7 @@ const showToast = (msg) => {
   toastTimer = setTimeout(() => { toastMessage.value = ''; }, 2200);
 };
 
-// Configuración & Catálogo
+// Catálogo, DSP & Persistencia
 const sleepTimer = ref({ active: false, remainingSeconds: 0 });
 const eqSettings = ref({ enabled: true, preset: 'bass_boost', bands: [] });
 const masterLibrary = ref([]);
@@ -51,7 +55,7 @@ const selectedGenre = ref(null);
 const selectedPlaylistId = ref(null);
 const filterCategoryTab = ref('artists');
 
-// Pista Activa
+// Pista Activa & Transporte
 const currentTrack = ref({
   path: null,
   title: null,
@@ -67,12 +71,11 @@ const repeatMode = ref('all'); // 'off' | 'all' | 'one'
 const volume = ref(10);
 const imageError = ref(false);
 
-// Búsqueda Inteligente (Opción 3)
+// Motor de Búsqueda Reactivo Multi-Término
 const searchQuery = ref('');
-const searchResults = ref(null);
-const isSearching = ref(false);
+const lyricsMatches = ref([]);
 
-// Color Extraction Engine
+// Extracción Cromática Adaptativa
 const { currentPalette, extractColorsFromImage } = useColorExtractor();
 
 const themeStyleObject = computed(() => ({
@@ -81,7 +84,7 @@ const themeStyleObject = computed(() => ({
   '--theme-glow': currentPalette.value.glow
 }));
 
-// Ticker de Tiempo
+// Ticker de Tiempo Local (250ms)
 const playStartTime = ref(0);
 const elapsedOffset = ref(0);
 const currentTime = ref(0);
@@ -94,10 +97,45 @@ const coverUrl = computed(() => {
 
 const handleImageError = () => { imageError.value = true; };
 
-// 3. Control de Transporte y Reproducción
+// =========================================================================
+// 3. MÉTODOS DE TRANSPORTE Y CONTROL DE AUDIO
+// =========================================================================
+const sanitizeTracks = (rawList) => {
+  return rawList.map(t => ({
+    id: t.id || null,
+    path: t.path,
+    title: t.title,
+    artist: t.artist,
+    album: t.album || null,
+    genre: t.genre || 'Varios',
+    duration: t.duration || 0
+  }));
+};
+
 const playTrack = (track) => {
   imageError.value = false;
-  socket.emit('play_track', track.path);
+  
+  if (searchQuery.value.trim()) {
+    const cleanList = sanitizeTracks(displayedQueue.value);
+    socket.emit('play_custom_queue', {
+      tracks: cleanList,
+      startPath: track.path
+    });
+    showToast(`Reproduciendo selección (${cleanList.length} pistas)`);
+  } else {
+    socket.emit('play_track', track.path);
+  }
+};
+
+const playAllSearchResults = () => {
+  if (!displayedQueue.value.length) return;
+  imageError.value = false;
+  const cleanList = sanitizeTracks(displayedQueue.value);
+  socket.emit('play_custom_queue', {
+    tracks: cleanList,
+    startPath: cleanList[0].path
+  });
+  showToast(`Reproduciendo lista (${cleanList.length} pistas)`);
 };
 
 const playNext = (track, event) => {
@@ -116,7 +154,7 @@ const seekAudio = (targetSec) => socket.emit('seek_audio', targetSec);
 const setFilter = (mode, param = null) => {
   imageError.value = false;
   searchQuery.value = '';
-  searchResults.value = null;
+  lyricsMatches.value = [];
   if (mode === 'artist') socket.emit('set_filter', { mode: 'artist', artist: param });
   else if (mode === 'genre') socket.emit('set_filter', { mode: 'genre', genre: param });
   else if (mode === 'playlist') socket.emit('set_filter', { mode: 'playlist', playlistId: param });
@@ -130,7 +168,9 @@ const toggleFavorite = (trackPath, event) => {
 
 const changeVolume = () => socket.emit('set_volume', volume.value);
 
-// 4. Modales y Sincronización
+// =========================================================================
+// 4. GESTIÓN DE MODALES, DSP & LETRAS
+// =========================================================================
 const setSleepTimer = (minutes) => socket.emit('set_sleep_timer', minutes);
 const cancelSleepTimer = () => socket.emit('cancel_sleep_timer');
 const handleUpdateEq = (newEq) => socket.emit('set_eq', newEq);
@@ -161,40 +201,56 @@ const openAddToPlaylistModal = (track, event) => {
 const handleCreatePlaylist = (name) => socket.emit('create_playlist', name);
 const handleAddToPlaylist = ({ playlistId, trackPath }) => {
   socket.emit('add_to_playlist', { playlistId, trackPath });
-  showToast('Pista agregada a la playlist');
+  showToast('Pista agregada a playlist');
 };
 const handleDeletePlaylist = (playlistId, event) => {
   if (event) event.stopPropagation();
   socket.emit('delete_playlist', playlistId);
 };
 
-// 5. Búsqueda Reactiva con Debounce hacia el Endpoint SQLite /api/search
+// =========================================================================
+// 5. MOTOR DE TOKENIZACIÓN MULTI-ARTISTA ('+') & BÚSQUEDA
+// =========================================================================
 let searchDebounceTimer = null;
 watch(searchQuery, (newVal) => {
   if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
 
   if (!newVal || !newVal.trim()) {
-    searchResults.value = null;
-    isSearching.value = false;
+    lyricsMatches.value = [];
     return;
   }
 
-  isSearching.value = true;
+  const tokens = newVal.split('+').map(t => t.trim()).filter(Boolean);
+  if (!tokens.length) return;
+
   searchDebounceTimer = setTimeout(async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(newVal.trim())}`);
-      if (res.ok) {
-        searchResults.value = await res.json();
-      }
+      const allResults = await Promise.all(
+        tokens.map(token => 
+          fetch(`${BACKEND_URL}/api/search?q=${encodeURIComponent(token)}`)
+            .then(res => res.ok ? res.json() : [])
+            .catch(() => [])
+        )
+      );
+
+      const flattened = allResults.flat();
+      const uniqueLyricsMap = new Map();
+      flattened.forEach(item => {
+        if (item.matched_snippet && !uniqueLyricsMap.has(item.path)) {
+          uniqueLyricsMap.set(item.path, item);
+        }
+      });
+
+      lyricsMatches.value = Array.from(uniqueLyricsMap.values());
     } catch (e) {
-      searchResults.value = null;
-    } finally {
-      isSearching.value = false;
+      lyricsMatches.value = [];
     }
-  }, 180);
+  }, 220);
 });
 
-// 6. Formateadores y Computadas
+// =========================================================================
+// 6. PROPIEDADES COMPUTADAS
+// =========================================================================
 const formatTime = (seconds) => {
   if (!seconds || isNaN(seconds) || seconds < 0) return '0:00';
   const mins = Math.floor(seconds / 60);
@@ -227,8 +283,44 @@ const uniqueGenres = computed(() => {
 });
 
 const displayedQueue = computed(() => {
-  if (searchResults.value !== null) {
-    return searchResults.value;
+  const rawQuery = searchQuery.value.trim();
+
+  if (rawQuery) {
+    const tokens = rawQuery
+      .split('+')
+      .map(t => t.toLowerCase().trim())
+      .filter(Boolean);
+
+    if (tokens.length > 0) {
+      const matchedTracks = masterLibrary.value.filter(track => {
+        const title = (track.title || '').toLowerCase();
+        const artist = (track.artist || '').toLowerCase();
+        const album = (track.album || '').toLowerCase();
+        const genre = (track.genre || '').toLowerCase();
+
+        return tokens.some(token => 
+          title.includes(token) || 
+          artist.includes(token) || 
+          album.includes(token) || 
+          genre.includes(token)
+        );
+      });
+
+      const resultList = [...matchedTracks];
+
+      if (lyricsMatches.value.length > 0) {
+        lyricsMatches.value.forEach(lTrack => {
+          const exists = resultList.find(t => t.path === lTrack.path);
+          if (!exists) {
+            resultList.push(lTrack);
+          } else {
+            exists.matched_snippet = lTrack.matched_snippet;
+          }
+        });
+      }
+
+      return resultList;
+    }
   }
 
   let list = queue.value;
@@ -252,7 +344,9 @@ watch(() => currentTrack.value.path, (newPath) => {
   }
 });
 
-// 7. Ciclo de Vida
+// =========================================================================
+// 7. CICLO DE VIDA & PROTOCOLO WEBSOCKET
+// =========================================================================
 const startProgressTicker = () => {
   if (progressInterval) clearInterval(progressInterval);
   progressInterval = setInterval(() => {
@@ -330,9 +424,7 @@ onUnmounted(() => {
     </transition>
 
     <div class="app-responsive-container">
-      <!-- ================================================================= -->
-      <!-- COLUMNA 1: REPRODUCTOR PRINCIPAL (DECK)                           -->
-      <!-- ================================================================= -->
+      <!-- PLAYER DECK CON VINILO GIRATORIO -->
       <aside class="sidebar-panel">
         <header class="navbar">
           <div class="brand">
@@ -406,13 +498,28 @@ onUnmounted(() => {
               </button>
             </div>
 
-            <div class="cover-container" @click="openLyricsModal" title="Toca para ver letras">
-              <img v-if="coverUrl" :src="coverUrl" alt="Cover" class="cover-art" @error="handleImageError" />
-              <div v-else class="cover-fallback">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <circle cx="12" cy="12" r="10"></circle>
-                  <circle cx="12" cy="12" r="3"></circle>
-                </svg>
+            <!-- Vinilo Giratorio -->
+            <div class="vinyl-deck" @click="openLyricsModal" title="Toca para ver letras">
+              <div class="vinyl-disc" :class="{ 'is-spinning': isPlaying }">
+                <div class="vinyl-grooves"></div>
+                <div class="vinyl-shine"></div>
+
+                <div class="vinyl-center-label">
+                  <img 
+                    v-if="coverUrl" 
+                    :src="coverUrl" 
+                    alt="Cover" 
+                    class="cover-art" 
+                    @error="handleImageError" 
+                  />
+                  <div v-else class="cover-fallback">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <circle cx="12" cy="12" r="10"></circle>
+                      <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                  </div>
+                  <div class="vinyl-spindle-hole"></div>
+                </div>
               </div>
             </div>
 
@@ -422,7 +529,7 @@ onUnmounted(() => {
               <span v-if="currentTrack.album" class="track-album-main">{{ currentTrack.album }}</span>
             </div>
 
-            <!-- Barra de Progreso con Soporte para Scrubbing / Seek -->
+            <!-- Barra de Progreso y Scrubbing -->
             <div class="progress-box">
               <div class="progress-track" @click="seekAudio(($event.offsetX / $event.currentTarget.offsetWidth) * currentTrack.duration)">
                 <div class="progress-fill" :style="{ width: `${progressPercent}%` }">
@@ -435,7 +542,7 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- Botonera de Control -->
+            <!-- Botonera -->
             <div class="controls-deck">
               <button class="btn-deck-action" :class="{ active: isShuffle }" @click="toggleShuffle" title="Aleatorio">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -486,9 +593,7 @@ onUnmounted(() => {
         </section>
       </aside>
 
-      <!-- ================================================================= -->
-      <!-- COLUMNA 2: EXPLORADOR, CATEGORÍAS Y BÚSQUEDA INTELIGENTE          -->
-      <!-- ================================================================= -->
+      <!-- EXPLORADOR & LISTA DE CANCIONES -->
       <main class="main-content-panel">
         <div class="category-toggle">
           <button class="toggle-tab" :class="{ active: filterCategoryTab === 'artists' }" @click="filterCategoryTab = 'artists'">
@@ -543,9 +648,21 @@ onUnmounted(() => {
         <section class="queue-card">
           <div class="queue-header">
             <div class="queue-header-left">
-              <h4>{{ searchResults !== null ? 'RESULTADOS DE BÚSQUEDA INTELIGENTE' : 'COLA DE REPRODUCCIÓN' }}</h4>
+              <h4>{{ searchQuery ? 'RESULTADOS' : 'COLA DE REPRODUCCIÓN' }}</h4>
               <span class="queue-count">{{ displayedQueue.length }} pistas</span>
             </div>
+
+            <!-- Botón de Reproducción Rápida de Selección -->
+            <button 
+              v-if="searchQuery && displayedQueue.length > 0" 
+              class="btn-play-all-search"
+              @click="playAllSearchResults"
+            >
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+              <span>Reproducir Selección</span>
+            </button>
 
             <div class="search-bar">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -555,7 +672,7 @@ onUnmounted(() => {
               <input 
                 type="text" 
                 v-model="searchQuery" 
-                placeholder="Buscar por título, artista o frases de letras..." 
+                placeholder="Ej. José Madero + Odisseo..." 
               />
               <span v-if="searchQuery" class="clear-search-btn" @click="searchQuery = ''">✕</span>
             </div>
@@ -564,17 +681,17 @@ onUnmounted(() => {
           <ul v-if="displayedQueue.length > 0" class="track-queue">
             <li 
               v-for="(track, index) in displayedQueue" 
-              :key="track.id" 
+              :key="track.path" 
               @click="playTrack(track)"
               :class="{ 
                 'is-active': currentTrack.path === track.path, 
-                'is-top-now': index === 0 && currentTrack.path === track.path && searchResults === null 
+                'is-top-now': index === 0 && currentTrack.path === track.path && !searchQuery 
               }"
             >
               <div class="track-info">
                 <div class="title-row">
                   <span class="track-name">{{ track.title }}</span>
-                  <span v-if="index === 0 && currentTrack.path === track.path && searchResults === null" class="now-badge">
+                  <span v-if="index === 0 && currentTrack.path === track.path && !searchQuery" class="now-badge">
                     REPRODUCIENDO
                   </span>
                 </div>
@@ -584,7 +701,6 @@ onUnmounted(() => {
                   <span v-if="track.genre && track.genre !== 'Varios'" class="track-genre-tag">• {{ track.genre }}</span>
                 </div>
 
-                <!-- Fragmento Coincidente en Letras (Opción 3) -->
                 <div v-if="track.matched_snippet" class="lyrics-match-badge">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
@@ -891,26 +1007,119 @@ onUnmounted(() => {
 }
 .fav-deck-btn svg { width: 16px; height: 16px; }
 
-.cover-container { width: 175px; height: 175px; margin: 0 auto 14px auto; }
+/* VINILO GIRATORIO */
+.vinyl-deck {
+  width: 190px;
+  height: 190px;
+  margin: 0 auto 14px auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  perspective: 800px;
+}
+
+.vinyl-disc {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  background: #09090b;
+  box-shadow: 
+    0 10px 25px rgba(0, 0, 0, 0.8),
+    inset 0 0 0 2px rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: rotateVinyl 12s linear infinite;
+  animation-play-state: paused;
+  will-change: transform;
+}
+
+.vinyl-disc.is-spinning {
+  animation-play-state: running;
+}
+
+.vinyl-grooves {
+  position: absolute;
+  inset: 6px;
+  border-radius: 50%;
+  background: repeating-radial-gradient(
+    circle at center,
+    #111827 0,
+    #111827 2px,
+    #030712 3px,
+    #030712 4px
+  );
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.vinyl-shine {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 45deg,
+    rgba(255, 255, 255, 0.08) 0deg,
+    transparent 60deg,
+    rgba(255, 255, 255, 0.08) 120deg,
+    transparent 180deg,
+    rgba(255, 255, 255, 0.08) 240deg,
+    transparent 300deg,
+    rgba(255, 255, 255, 0.08) 360deg
+  );
+  pointer-events: none;
+}
+
+.vinyl-center-label {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 3px solid #18181b;
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
 .cover-art {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  border-radius: 16px;
-  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.2);
 }
+
 .cover-fallback {
   width: 100%;
   height: 100%;
-  background: #0b0f19;
-  border-radius: 16px;
+  background: #1e293b;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px dashed rgba(255, 255, 255, 0.15);
 }
-.cover-fallback svg { width: 50px; height: 50px; color: #4b5563; }
+.cover-fallback svg {
+  width: 32px;
+  height: 32px;
+  color: #64748b;
+}
+
+.vinyl-spindle-hole {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #030712;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.9);
+}
+
+@keyframes rotateVinyl {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
 
 .track-meta-center { text-align: center; margin-bottom: 12px; }
 .track-title-main {
@@ -1066,6 +1275,24 @@ onUnmounted(() => {
 .queue-header-left h4 { margin: 0; font-size: 0.75rem; font-weight: 800; letter-spacing: 0.4px; }
 .queue-count { font-size: 0.65rem; color: #6b7280; font-weight: 600; }
 
+.btn-play-all-search {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--theme-accent, #38bdf8);
+  color: #030712;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.btn-play-all-search:active { opacity: 0.85; }
+.btn-play-all-search svg { width: 14px; height: 14px; }
+
 .search-bar {
   display: flex;
   align-items: center;
@@ -1216,7 +1443,8 @@ onUnmounted(() => {
 
   .sidebar-panel { position: sticky; top: 24px; }
   .player-card { border-radius: 28px; }
-  .cover-container { width: 220px; height: 220px; margin: 0 auto 16px auto; }
+  .vinyl-deck { width: 220px; height: 220px; margin: 0 auto 16px auto; }
+  .vinyl-center-label { width: 110px; height: 110px; }
   .track-title-main { font-size: 1.25rem; }
   .track-artist-main { font-size: 0.95rem; }
 

@@ -32,7 +32,7 @@ const saveDb = () => {
   }
 };
 
-// Inicialización de Esquema e Índices
+// Esquema e Índices
 db.run(`
   CREATE TABLE IF NOT EXISTS tracks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,7 +86,6 @@ db.run(`
 saveDb();
 
 export const dbService = {
-  // Catálogo de Pistas
   getAllTracks: () => {
     const res = db.exec('SELECT * FROM tracks ORDER BY id ASC');
     if (!res.length) return [];
@@ -138,7 +137,6 @@ export const dbService = {
     saveDb();
   },
 
-  // Favoritos
   getFavorites: () => {
     const res = db.exec('SELECT track_path FROM favorites ORDER BY created_at DESC');
     return res.length ? res[0].values.map(r => r[0]) : [];
@@ -161,7 +159,6 @@ export const dbService = {
     }
   },
 
-  // Playlists
   getPlaylists: () => {
     const res = db.exec('SELECT * FROM playlists ORDER BY created_at ASC');
     if (!res.length) return [];
@@ -193,7 +190,6 @@ export const dbService = {
     saveDb();
   },
 
-  // Configuración & DSP
   getSetting: (key, defaultValue = null) => {
     const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
     stmt.bind([key]);
@@ -211,7 +207,6 @@ export const dbService = {
     saveDb();
   },
 
-  // Letras Sincronizadas
   getLyrics: (trackPath) => {
     const stmt = db.prepare('SELECT plain_lyrics, synced_lyrics FROM lyrics WHERE track_path = ?');
     stmt.bind([trackPath]);
@@ -252,52 +247,50 @@ export const dbService = {
     });
   },
 
-  // Búsqueda Rápida Inteligente (Metadatos + Letras)
+  // Búsqueda Blindada contra Fallos
   searchTracks: (query) => {
     if (!query || !query.trim()) return [];
     const term = `%${query.trim().toLowerCase()}%`;
 
-    const sql = `
-      SELECT 
-        t.id, t.path, t.title, t.artist, t.album, t.genre, t.duration,
-        CASE 
-          WHEN LOWER(t.title) LIKE $term THEN 'title'
-          WHEN LOWER(t.artist) LIKE $term THEN 'artist'
-          WHEN LOWER(COALESCE(t.album, '')) LIKE $term THEN 'album'
-          WHEN LOWER(COALESCE(l.plain_lyrics, '')) LIKE $term OR LOWER(COALESCE(l.synced_lyrics, '')) LIKE $term THEN 'lyrics'
-          ELSE 'genre'
-        END AS match_type,
-        l.plain_lyrics,
-        l.synced_lyrics
-      FROM tracks t
-      LEFT JOIN lyrics l ON t.path = l.track_path
-      WHERE 
-        LOWER(t.title) LIKE $term OR 
-        LOWER(t.artist) LIKE $term OR 
-        LOWER(COALESCE(t.album, '')) LIKE $term OR 
-        LOWER(COALESCE(t.genre, '')) LIKE $term OR
-        LOWER(COALESCE(l.plain_lyrics, '')) LIKE $term OR
-        LOWER(COALESCE(l.synced_lyrics, '')) LIKE $term
-      LIMIT 100
-    `;
+    try {
+      const sql = `
+        SELECT 
+          t.id, t.path, t.title, t.artist, t.album, t.genre, t.duration,
+          l.plain_lyrics, l.synced_lyrics
+        FROM tracks t
+        LEFT JOIN lyrics l ON t.path = l.track_path
+        WHERE 
+          LOWER(t.title) LIKE ? OR 
+          LOWER(t.artist) LIKE ? OR 
+          LOWER(COALESCE(t.album, '')) LIKE ? OR 
+          LOWER(COALESCE(t.genre, '')) LIKE ? OR
+          LOWER(COALESCE(l.plain_lyrics, '')) LIKE ? OR
+          LOWER(COALESCE(l.synced_lyrics, '')) LIKE ?
+        LIMIT 100
+      `;
 
-    const stmt = db.prepare(sql);
-    stmt.bind({ '$term': term });
-    const results = [];
+      const res = db.exec(sql, [term, term, term, term, term, term]);
+      if (!res.length) return [];
 
-    while (stmt.step()) {
-      const row = stmt.getAsObject();
-      if (row.match_type === 'lyrics' && (row.synced_lyrics || row.plain_lyrics)) {
-        const rawText = row.synced_lyrics || row.plain_lyrics;
-        const lines = rawText.split('\n');
-        const matchedLine = lines.find(l => l.toLowerCase().includes(query.toLowerCase()));
-        row.matched_snippet = matchedLine ? matchedLine.replace(/\[\d{2}:\d{2}\.\d{2,3}\]/g, '').trim() : null;
-      }
-      delete row.plain_lyrics;
-      delete row.synced_lyrics;
-      results.push(row);
+      const { columns, values } = res[0];
+      return values.map(row => {
+        const obj = {};
+        columns.forEach((col, idx) => { obj[col] = row[idx]; });
+
+        const rawLyrics = obj.synced_lyrics || obj.plain_lyrics;
+        if (rawLyrics && rawLyrics.toLowerCase().includes(query.toLowerCase())) {
+          const lines = rawLyrics.split('\n');
+          const matchedLine = lines.find(l => l.toLowerCase().includes(query.toLowerCase()));
+          obj.matched_snippet = matchedLine ? matchedLine.replace(/\[\d{2}:\d{2}\.\d{2,3}\]/g, '').trim() : null;
+        }
+
+        delete obj.plain_lyrics;
+        delete obj.synced_lyrics;
+        return obj;
+      });
+    } catch (err) {
+      console.error('[Search SQL Error]:', err.message);
+      return [];
     }
-    stmt.free();
-    return results;
   }
 };

@@ -4,6 +4,8 @@ import audioRoutes from './audioRoutes.js';
 import uploadRoutes from './uploadRoutes.js';
 
 const router = Router();
+
+// Agrupación de sub-enrutadores
 router.use('/', audioRoutes);
 router.use('/', uploadRoutes);
 
